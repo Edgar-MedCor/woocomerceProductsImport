@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WooCommerce Auto Publisher</title>
+  <style>
+    :root { --bg:#f7f2ea; --card:#fffaf3; --ink:#1d1a16; --muted:#756b60; --line:#e6d9c8; --ok:#147a39; --warn:#9b6400; --danger:#b42318; --blue:#265caa; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: radial-gradient(circle at top left,#fff4de,transparent 34%), var(--bg); color:var(--ink); }
+    .wrap { max-width:1280px; margin:auto; padding:32px 18px; }
+    .hero { display:flex; justify-content:space-between; gap:24px; align-items:flex-end; margin-bottom:22px; }
+    h1 { margin:0; font-size:clamp(28px,5vw,48px); line-height:.95; letter-spacing:-1.6px; }
+    h2 { margin-top:0; }
+    p { color:var(--muted); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:22px; padding:22px; box-shadow:0 12px 32px rgba(69,45,22,.08); }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    label { display:block; font-weight:750; margin-bottom:8px; }
+    input, select, button { font:inherit; }
+    input[type="file"], select { width:100%; padding:13px; border:1px dashed var(--line); background:#fff; border-radius:14px; }
+    button { border:0; border-radius:999px; padding:13px 20px; background:var(--ink); color:white; font-weight:800; cursor:pointer; }
+    button.secondary { background:white; color:var(--ink); border:1px solid var(--line); }
+    button.blue { background:var(--blue); }
+    button.danger { background:var(--danger); }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
+    .stats { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin:18px 0; }
+    .stat { background:white; border:1px solid var(--line); border-radius:16px; padding:14px; }
+    .stat b { display:block; font-size:24px; }
+    .stat span { color:var(--muted); font-size:13px; }
+    .pill { display:inline-flex; align-items:center; border-radius:999px; padding:5px 9px; font-size:12px; font-weight:800; background:#eee; white-space:normal; }
+    .pill.ok { color:var(--ok); background:#e8f5eb; }
+    .pill.warn { color:var(--warn); background:#fff4d7; }
+    .pill.err { color:var(--danger); background:#fde8e7; }
+    .pill.blue { color:var(--blue); background:#e9f1ff; }
+    table { width:100%; border-collapse:collapse; background:white; border-radius:18px; overflow:hidden; }
+    th, td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; font-size:14px; }
+    th { background:#fbefe0; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    .thumbs { display:flex; gap:5px; flex-wrap:wrap; }
+    .thumbs img { width:42px; height:42px; object-fit:cover; border-radius:9px; border:1px solid var(--line); }
+    .small { font-size:12px; color:var(--muted); }
+    .hidden { display:none; }
+    pre { white-space:pre-wrap; background:#171717; color:#fff; padding:16px; border-radius:16px; max-height:420px; overflow:auto; }
+    .tabs { display:flex; gap:8px; flex-wrap:wrap; margin:18px 0; }
+    .tab { background:white; color:var(--ink); border:1px solid var(--line); }
+    .tab.active { background:var(--ink); color:white; }
+    .notice { background:#fff; border:1px solid var(--line); border-radius:16px; padding:14px; margin-top:12px; }
+    @media (max-width:900px){ .grid,.stats{grid-template-columns:1fr;} .hero{display:block;} table{display:block;overflow:auto;} }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <div>
+        <h1>WooCommerce<br>Auto Publisher</h1>
+      </div>
+     
+    </section>
+
+    <section class="card">cls
+      <form id="uploadForm">
+        <div class="grid">
+          <div>
+            <label>CSV o Excel de productos</label>
+            <input name="productFile" type="file" accept=".csv,.xlsx,.xls" required />
+          </div>
+          <div>
+            <label>Imágenes opcionales en bulk</label>
+            <input name="images" type="file" accept="image/*" multiple />
+            <div class="small">Convención: SKU.jpg, SKU_2.jpg, SKU_3.jpg. La publicación real de imágenes locales entra en la fase Media API.</div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:16px;">
+          <div>
+            <label>Modo</label>
+            <select id="mode">
+              <option value="auto">Crear o actualizar automáticamente</option>
+              <option value="create_only">Solo crear nuevos</option>
+              <option value="update_only">Solo actualizar existentes</option>
+              <option value="migration">Migración inicial</option>
+            </select>
+          </div>
+          <div>
+            <label>Publicación</label>
+            <select id="publishStatus">
+              <option value="dry">Solo preview / no publicar</option>
+              <option value="real">Publicar real después de confirmar</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:16px;">
+          <div>
+            <label>Estado para productos nuevos</label>
+            <select id="defaultStatus">
+              <option value="">Respetar CSV</option>
+              <option value="draft">Borrador</option>
+              <option value="publish">Publicado</option>
+            </select>
+          </div>
+          <div>
+            <label>Preparación automática</label>
+            <select id="prepareCatalog">
+              <option value="yes">Crear categorías, etiquetas, atributos y términos faltantes</option>
+              <option value="no">No preparar catálogo</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="submit">1. Analizar archivo</button>
+          <button id="checkStoreBtn" type="button" class="secondary" disabled>2. Revisar contra tienda nueva</button>
+          <button id="prepareBtn" type="button" class="secondary" disabled>3. Preparar catálogo</button>
+          <button id="publishBtn" type="button" class="blue" disabled>4. Generar payload / publicar</button>
+        </div>
+      </form>
+     
+    </section>
+
+    <section id="result" class="hidden">
+      <div class="stats" id="stats"></div>
+
+      <section class="card" style="margin-bottom:16px;">
+        <h2>Columnas ignoradas</h2>
+        <p id="ignored" class="small"></p>
+      </section>
+
+      <section id="storeSection" class="card hidden" style="margin-bottom:16px;">
+        <h2>Revisión contra tienda nueva</h2>
+        <div class="stats" id="storeStats"></div>
+        <div id="storeMissing" class="small"></div>
+      </section>
+
+      <section class="card">
+        <h2>Preview limpio</h2>
+        <div class="tabs">
+          <button class="tab active" type="button" data-filter="all">Todos</button>
+          <button class="tab" type="button" data-filter="create">Crear</button>
+          <button class="tab" type="button" data-filter="update">Actualizar</button>
+          <button class="tab" type="button" data-filter="error">Errores</button>
+        </div>
+        <div id="tableWrap"></div>
+      </section>
+    </section>
+
+    <section id="reportSection" class="card hidden" style="margin-top:16px;">
+      <h2>Reporte</h2>
+      <pre id="report"></pre>
+    </section>
+  </main>
+
+  <script>
+    const form = document.querySelector('#uploadForm');
+    const result = document.querySelector('#result');
+    const stats = document.querySelector('#stats');
+    const ignored = document.querySelector('#ignored');
+    const tableWrap = document.querySelector('#tableWrap');
+    const publishBtn = document.querySelector('#publishBtn');
+    const checkStoreBtn = document.querySelector('#checkStoreBtn');
+    const prepareBtn = document.querySelector('#prepareBtn');
+    const reportSection = document.querySelector('#reportSection');
+    const report = document.querySelector('#report');
+    const storeSection = document.querySelector('#storeSection');
+    const storeStats = document.querySelector('#storeStats');
+    const storeMissing = document.querySelector('#storeMissing');
+
+    let currentAnalysis = null;
+    let currentProducts = [];
+    let activeFilter = 'all';
+
+    form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    setLoading(true, 'Analizando...');
+    reportSection.classList.add('hidden');
+    storeSection.classList.add('hidden');
+
+    const data = new FormData(form);
+    const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: data
+    });
+
+    const json = await res.json();
+
+    if (!json.ok) {
+        alert(json.message || 'No se pudo analizar el archivo');
+        setLoading(false);
+        return;
+    }
+
+    currentAnalysis = json.analysis;
+    currentProducts = json.analysis.products;
+
+    renderAnalysis(json.analysis);
+
+    if (json.inventoryOnly) {
+        checkStoreBtn.disabled = true;
+        prepareBtn.disabled = true;
+
+        publishBtn.disabled = false;
+        publishBtn.textContent = 'Actualizar inventario';
+    } else {
+        checkStoreBtn.disabled = false;
+        prepareBtn.disabled = false;
+
+        publishBtn.disabled = false;
+        publishBtn.textContent = '4. Generar payload / publicar';
+    }
+
+    setLoading(false);
+
+}); // <-- ESTA LLAVE Y PARÉNTESIS TE FALTAN
+
+    checkStoreBtn.addEventListener('click', async () => {
+      if (!currentProducts.length) return;
+      setLoading(true, 'Revisando tienda...');
+      const json = await postJson('/api/store/check', {
+        products: currentProducts,
+        mode: document.querySelector('#mode').value,
+      });
+      if (!json.ok) {
+        alert(json.message || 'No se pudo revisar la tienda nueva. Revisa tu .env');
+        report.textContent = JSON.stringify(json, null, 2);
+        reportSection.classList.remove('hidden');
+        setLoading(false);
+        return;
+      }
+      currentProducts = json.analysis.products;
+      renderStoreAnalysis(json.analysis);
+      renderTable(currentProducts);
+      setLoading(false);
+    });
+
+    prepareBtn.addEventListener('click', async () => {
+      if (!currentProducts.length) return;
+      if (!confirm('Esto creará categorías, etiquetas, atributos y términos faltantes en la tienda nueva. ¿Confirmas?')) return;
+      setLoading(true, 'Preparando catálogo...');
+      const json = await postJson('/api/store/prepare', { products: currentProducts, createMissing: true });
+      report.textContent = JSON.stringify(json, null, 2);
+      reportSection.classList.remove('hidden');
+      setLoading(false);
+    });
+
+    publishBtn.addEventListener('click', async () => {
+      const dry = document.querySelector('#publishStatus').value === 'dry';
+      if (!dry && !confirm('Esto intentará crear/actualizar productos y variaciones en WooCommerce. ¿Confirmas?')) return;
+      setLoading(true, dry ? 'Generando payload...' : 'Publicando...');
+
+      const json = await postJson('/api/publish', {
+        products: currentProducts,
+        mode: document.querySelector('#mode').value,
+        dryRun: dry,
+        prepareCatalog: document.querySelector('#prepareCatalog').value === 'yes',
+        defaultStatus: document.querySelector('#defaultStatus').value,
+      });
+      report.textContent = JSON.stringify(json, null, 2);
+      reportSection.classList.remove('hidden');
+      setLoading(false);
+    });
+
+    document.querySelectorAll('.tab').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach((item) => item.classList.remove('active'));
+        button.classList.add('active');
+        activeFilter = button.dataset.filter;
+        renderTable(currentProducts);
+      });
+    });
+
+    async function postJson(url, body) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return res.json();
+    }
+
+    function setLoading(isLoading, label = '') {
+      form.querySelectorAll('button').forEach((btn) => {
+        if (btn.id === 'checkStoreBtn' && !currentProducts.length) return;
+        if (btn.id === 'prepareBtn' && !currentProducts.length) return;
+        if (btn.id === 'publishBtn' && !currentProducts.length) return;
+        btn.disabled = isLoading;
+      });
+      if (isLoading && label) report.textContent = label;
+    }
+
+    function renderAnalysis(analysis) {
+      result.classList.remove('hidden');
+      const s = analysis.summary;
+      stats.innerHTML = `
+        ${stat('Total', s.total)}
+        ${stat('Simples', s.byType.simple || 0)}
+        ${stat('Variables', s.byType.variable || 0)}
+        ${stat('Variaciones', s.byType.variation || 0)}
+        ${stat('Errores', s.errors)}
+        ${stat('Warnings', s.warnings)}
+      `;
+      ignored.textContent = analysis.ignoredColumns.length
+        ? analysis.ignoredColumns.join(', ')
+        : 'No se detectaron columnas completamente vacías.';
+      renderTable(analysis.products);
+    }
+
+    function renderStoreAnalysis(analysis) {
+      storeSection.classList.remove('hidden');
+      const s = analysis.summary;
+      storeStats.innerHTML = `
+        ${stat('Crear', s.toCreate)}
+        ${stat('Actualizar', s.toUpdate)}
+        ${stat('Ignorar', s.toIgnore)}
+        ${stat('Cat. faltantes', s.missingCategories)}
+        ${stat('Atrib. faltantes', s.missingAttributes)}
+        ${stat('Términos faltantes', s.missingTerms)}
+      `;
+      const m = analysis.catalog.missing;
+      storeMissing.innerHTML = `
+        <b>Faltantes detectados:</b><br>
+        Categorías: ${m.categories.slice(0, 20).map(x => escapeHtml(x.path)).join(', ') || 'ninguna'}<br>
+        Etiquetas: ${m.tags.slice(0, 20).map(x => escapeHtml(x.name)).join(', ') || 'ninguna'}<br>
+        Atributos: ${m.attributes.slice(0, 20).map(x => escapeHtml(x.name)).join(', ') || 'ninguno'}<br>
+        Términos: ${m.terms.slice(0, 30).map(x => `${escapeHtml(x.attribute)}:${escapeHtml(x.term)}`).join(', ') || 'ninguno'}
+      `;
+    }
+
+    function renderTable(products) {
+      const filtered = products.filter((p) => {
+        if (activeFilter === 'all') return true;
+        if (activeFilter === 'error') return p.errors?.length;
+        return p.storeStatus?.action === activeFilter;
+      });
+      const rows = filtered.slice(0, 300).map(productRow).join('');
+      tableWrap.innerHTML = `
+        <p class="small">Mostrando máximo 300 filas. Filtro actual: ${escapeHtml(activeFilter)}.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Nombre</th>
+              <th>Tipo</th>
+              <th>Acción tienda</th>
+              <th>Precio</th>
+              <th>Stock</th>
+              <th>Imágenes</th>
+              <th>Categorías</th>
+              <th>Atributos</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function stat(label, value) {
+      return `<div class="stat"><b>${value}</b><span>${label}</span></div>`;
+    }
+
+    function actionPill(p) {
+      const action = p.storeStatus?.action;
+      if (!action) return '<span class="pill">Sin revisar</span>';
+      if (action === 'create') return '<span class="pill ok">Crear</span>';
+      if (action === 'update') return '<span class="pill blue">Actualizar</span>';
+      if (action === 'ignore') return `<span class="pill warn">Ignorar</span><div class="small">${escapeHtml(p.storeStatus.reason || '')}</div>`;
+      return `<span class="pill warn">${escapeHtml(action)}</span>`;
+    }
+
+    function productRow(p) {
+      const status = p.errors?.length
+        ? `<span class="pill err">${p.errors.map(escapeHtml).join('<br>')}</span>`
+        : p.warnings?.length
+          ? `<span class="pill warn">${p.warnings.map(escapeHtml).join('<br>')}</span>`
+          : `<span class="pill ok">OK</span>`;
+
+      const images = (p.images || []).slice(0, 4).map((img) => {
+        const src = img.url || img.src;
+        return src ? `<img src="${escapeHtml(src)}" alt="">` : '';
+      }).join('');
+
+      const attrs = (p.attributes || []).map((a) => `${escapeHtml(a.name)}: ${escapeHtml((a.values || []).join('|'))}`).join('<br>');
+
+      return `
+        <tr>
+          <td><b>${escapeHtml(p.sku || '')}</b><div class="small">Fila ${p.rowNumber}</div></td>
+          <td>${escapeHtml(p.name || '')}${p.parentSku ? `<div class="small">Padre: ${escapeHtml(p.parentSku)}</div>` : ''}</td>
+          <td>${escapeHtml(p.type || '')}</td>
+          <td>${actionPill(p)}</td>
+          <td>${escapeHtml(p.regularPrice || '')}</td>
+          <td>${escapeHtml(String(p.stock ?? ''))}</td>
+          <td><div class="thumbs">${images}</div><div class="small">${(p.images || []).length} imgs</div></td>
+          <td>${escapeHtml((p.categories || []).join(', '))}</td>
+          <td class="small">${attrs}</td>
+          <td>${status}</td>
+        </tr>
+      `;
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+  </script>
+</body>
+</html>
+    

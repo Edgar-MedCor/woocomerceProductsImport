@@ -1,0 +1,23 @@
+{
+  "name": "woo-publisher",
+  "version": "0.2.0",
+  "description": "WooCommerce Auto Publisher - CSV/Excel migration, catalog preparation and bulk product manager",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "nodemon server/index.js",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.11.0",
+    "@woocommerce/woocommerce-rest-api": "^1.0.2",
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
