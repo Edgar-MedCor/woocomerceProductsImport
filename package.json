@@ -1,23 +1,30 @@
 {
-  "name": "woo-publisher",
+  "name": "wayan-sync",
   "version": "0.2.0",
-  "description": "WooCommerce Auto Publisher - CSV/Excel migration, catalog preparation and bulk product manager",
-  "main": "server/index.js",
+  "description": "Sincroniza productos de WooCommerce con un Excel en OneDrive (pull / push) con panel web",
+  "private": true,
+  "main": "src/server/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "dev": "nodemon server/index.js",
-    "start": "node server/index.js"
+    "start": "node src/server/index.js",
+    "dev": "node --watch src/server/index.js",
+    "test": "node --test --test-reporter=spec \"test/*.test.js\"",
+    "create-user": "node scripts/create-user.js",
+    "login": "node src/cli.js login",
+    "pull": "node src/cli.js pull",
+    "push": "node src/cli.js push"
   },
   "dependencies": {
-    "@google/genai": "^2.11.0",
+    "@azure/msal-node": "^2.16.2",
     "@woocommerce/woocommerce-rest-api": "^1.0.2",
-    "axios": "^1.7.9",
-    "cors": "^2.8.5",
+    "connect-pg-simple": "^10.0.0",
     "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
-    "multer": "^1.4.5-lts.1",
-    "xlsx": "^0.18.5"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.9"
+    "express-session": "^1.18.1",
+    "pg": "^8.13.1",
+    "sharp": "^0.33.5"
   }
 }

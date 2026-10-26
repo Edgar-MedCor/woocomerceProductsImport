@@ -1,0 +1,20 @@
+# Servicio systemd del panel Wayan Sync.
+# Copiar a /etc/systemd/system/wayan-sync.service y luego:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now wayan-sync
+[Unit]
+Description=Wayan Sync (panel Excel <-> WooCommerce)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=wayansync
+WorkingDirectory=/opt/wayan-sync
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node src/server/index.js
+Restart=always
+RestartSec=5
+# Una sincronización larga no debe cortarse por un reinicio brusco.
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

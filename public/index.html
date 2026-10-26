@@ -1,411 +1,216 @@
 <!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WooCommerce Auto Publisher</title>
-  <style>
-    :root { --bg:#f7f2ea; --card:#fffaf3; --ink:#1d1a16; --muted:#756b60; --line:#e6d9c8; --ok:#147a39; --warn:#9b6400; --danger:#b42318; --blue:#265caa; }
-    * { box-sizing: border-box; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: radial-gradient(circle at top left,#fff4de,transparent 34%), var(--bg); color:var(--ink); }
-    .wrap { max-width:1280px; margin:auto; padding:32px 18px; }
-    .hero { display:flex; justify-content:space-between; gap:24px; align-items:flex-end; margin-bottom:22px; }
-    h1 { margin:0; font-size:clamp(28px,5vw,48px); line-height:.95; letter-spacing:-1.6px; }
-    h2 { margin-top:0; }
-    p { color:var(--muted); }
-    .card { background:var(--card); border:1px solid var(--line); border-radius:22px; padding:22px; box-shadow:0 12px 32px rgba(69,45,22,.08); }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-    label { display:block; font-weight:750; margin-bottom:8px; }
-    input, select, button { font:inherit; }
-    input[type="file"], select { width:100%; padding:13px; border:1px dashed var(--line); background:#fff; border-radius:14px; }
-    button { border:0; border-radius:999px; padding:13px 20px; background:var(--ink); color:white; font-weight:800; cursor:pointer; }
-    button.secondary { background:white; color:var(--ink); border:1px solid var(--line); }
-    button.blue { background:var(--blue); }
-    button.danger { background:var(--danger); }
-    button:disabled { opacity:.45; cursor:not-allowed; }
-    .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
-    .stats { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin:18px 0; }
-    .stat { background:white; border:1px solid var(--line); border-radius:16px; padding:14px; }
-    .stat b { display:block; font-size:24px; }
-    .stat span { color:var(--muted); font-size:13px; }
-    .pill { display:inline-flex; align-items:center; border-radius:999px; padding:5px 9px; font-size:12px; font-weight:800; background:#eee; white-space:normal; }
-    .pill.ok { color:var(--ok); background:#e8f5eb; }
-    .pill.warn { color:var(--warn); background:#fff4d7; }
-    .pill.err { color:var(--danger); background:#fde8e7; }
-    .pill.blue { color:var(--blue); background:#e9f1ff; }
-    table { width:100%; border-collapse:collapse; background:white; border-radius:18px; overflow:hidden; }
-    th, td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; font-size:14px; }
-    th { background:#fbefe0; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
-    .thumbs { display:flex; gap:5px; flex-wrap:wrap; }
-    .thumbs img { width:42px; height:42px; object-fit:cover; border-radius:9px; border:1px solid var(--line); }
-    .small { font-size:12px; color:var(--muted); }
-    .hidden { display:none; }
-    pre { white-space:pre-wrap; background:#171717; color:#fff; padding:16px; border-radius:16px; max-height:420px; overflow:auto; }
-    .tabs { display:flex; gap:8px; flex-wrap:wrap; margin:18px 0; }
-    .tab { background:white; color:var(--ink); border:1px solid var(--line); }
-    .tab.active { background:var(--ink); color:white; }
-    .notice { background:#fff; border:1px solid var(--line); border-radius:16px; padding:14px; margin-top:12px; }
-    @media (max-width:900px){ .grid,.stats{grid-template-columns:1fr;} .hero{display:block;} table{display:block;overflow:auto;} }
-  </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wayan Sync</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main class="wrap">
-    <section class="hero">
-      <div>
-        <h1>WooCommerce<br>Auto Publisher</h1>
+  <!-- Login -->
+  <section id="loginView" class="login hidden">
+    <form id="loginForm" class="card login-card">
+      <h1>Wayan Sync</h1>
+      <p class="muted">Catálogo de productos · Excel ↔ tienda</p>
+      <label>Usuario <input name="username" autocomplete="username" required></label>
+      <label>Contraseña <input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Entrar</button>
+      <p id="loginError" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <!-- Panel -->
+  <div id="appView" class="hidden">
+    <header class="topbar">
+      <strong>Wayan Sync</strong>
+      <nav id="tabs">
+        <button data-tab="sync" data-perm="pull" class="active">Catálogo (Excel)</button>
+        <button data-tab="photos" data-perm="photos">Fotos</button>
+        <button data-tab="history" data-perm="history">Historial</button>
+        <button data-tab="users" data-perm="users">Usuarios</button>
+        <button data-tab="connections" data-perm="connections">Conexiones</button>
+      </nav>
+      <div class="user">
+        <span id="userName"></span>
+        <button id="passwordBtn" class="link">Cambiar contraseña</button>
+        <button id="logoutBtn" class="link">Salir</button>
       </div>
-     
-    </section>
+    </header>
 
-    <section class="card">cls
-      <form id="uploadForm">
+    <main>
+      <!-- Sincronizar -->
+      <section data-view="sync">
         <div class="grid">
-          <div>
-            <label>CSV o Excel de productos</label>
-            <input name="productFile" type="file" accept=".csv,.xlsx,.xls" required />
+          <div class="card">
+            <h2>Excel de productos</h2>
+            <p id="excelInfo" class="muted">Cargando…</p>
+            <a id="excelLink" class="button secondary hidden" target="_blank" rel="noopener">Abrir Excel en OneDrive</a>
           </div>
-          <div>
-            <label>Imágenes opcionales en bulk</label>
-            <input name="images" type="file" accept="image/*" multiple />
-            <div class="small">Convención: SKU.jpg, SKU_2.jpg, SKU_3.jpg. La publicación real de imágenes locales entra en la fase Media API.</div>
+
+          <div class="card" data-perm="pull">
+            <h2>1 · Traer de la tienda</h2>
+            <p class="muted">Actualiza el Excel con los productos, precios e inventario que hay hoy en la tienda.</p>
+            <button id="pullBtn">Traer de la tienda</button>
+          </div>
+
+          <div class="card" data-perm="push">
+            <h2>2 · Subir a la tienda</h2>
+            <p class="muted">Primero revisa qué cambió en el Excel; nada se sube hasta que confirmes.</p>
+            <button id="reviewBtn">Revisar cambios</button>
           </div>
         </div>
 
-        <div class="grid" style="margin-top:16px;">
-          <div>
-            <label>Modo</label>
-            <select id="mode">
-              <option value="auto">Crear o actualizar automáticamente</option>
-              <option value="create_only">Solo crear nuevos</option>
-              <option value="update_only">Solo actualizar existentes</option>
-              <option value="migration">Migración inicial</option>
-            </select>
+        <div class="job-slot">
+        <div id="jobCard" class="card hidden">
+          <div class="job-head">
+            <h2 id="jobTitle"></h2>
+            <span id="jobBadge" class="badge"></span>
           </div>
-          <div>
-            <label>Publicación</label>
-            <select id="publishStatus">
-              <option value="dry">Solo preview / no publicar</option>
-              <option value="real">Publicar real después de confirmar</option>
-            </select>
+          <div id="jobProgress" class="progress hidden"><div></div></div>
+          <p id="jobProgressText" class="muted"></p>
+          <div id="jobError" class="error-box hidden"></div>
+          <button id="forcePullBtn" class="danger hidden">Sobrescribir el Excel de todos modos</button>
+          <table id="jobSummary" class="summary hidden"></table>
+          <div id="planView" class="hidden">
+            <ul id="planNotes" class="notes"></ul>
+            <div class="plan-actions">
+              <button id="pushBtn" class="hidden"></button>
+              <a id="jobExcelLink" class="button secondary hidden" target="_blank" rel="noopener">Abrir Excel</a>
+            </div>
+            <div class="filters">
+              <button data-filter="all" class="chip active">Todo</button>
+              <button data-filter="changes" class="chip">Cambios</button>
+              <button data-filter="errors" class="chip">Errores</button>
+              <button data-filter="conflicts" class="chip">Conflictos</button>
+            </div>
+            <div class="table-wrap">
+              <table class="table plan">
+                <thead><tr><th id="rowHead">Fila</th><th>Producto</th><th>Qué pasa</th><th id="resultHead" class="hidden">Resultado</th></tr></thead>
+                <tbody id="planBody"></tbody>
+              </table>
+            </div>
           </div>
+          <details>
+            <summary>Detalle</summary>
+            <ol id="jobLog" class="log"></ol>
+          </details>
         </div>
-
-        <div class="grid" style="margin-top:16px;">
-          <div>
-            <label>Estado para productos nuevos</label>
-            <select id="defaultStatus">
-              <option value="">Respetar CSV</option>
-              <option value="draft">Borrador</option>
-              <option value="publish">Publicado</option>
-            </select>
-          </div>
-          <div>
-            <label>Preparación automática</label>
-            <select id="prepareCatalog">
-              <option value="yes">Crear categorías, etiquetas, atributos y términos faltantes</option>
-              <option value="no">No preparar catálogo</option>
-            </select>
-          </div>
         </div>
-
-        <div class="actions">
-          <button type="submit">1. Analizar archivo</button>
-          <button id="checkStoreBtn" type="button" class="secondary" disabled>2. Revisar contra tienda nueva</button>
-          <button id="prepareBtn" type="button" class="secondary" disabled>3. Preparar catálogo</button>
-          <button id="publishBtn" type="button" class="blue" disabled>4. Generar payload / publicar</button>
-        </div>
-      </form>
-     
-    </section>
-
-    <section id="result" class="hidden">
-      <div class="stats" id="stats"></div>
-
-      <section class="card" style="margin-bottom:16px;">
-        <h2>Columnas ignoradas</h2>
-        <p id="ignored" class="small"></p>
       </section>
 
-      <section id="storeSection" class="card hidden" style="margin-bottom:16px;">
-        <h2>Revisión contra tienda nueva</h2>
-        <div class="stats" id="storeStats"></div>
-        <div id="storeMissing" class="small"></div>
-      </section>
-
-      <section class="card">
-        <h2>Preview limpio</h2>
-        <div class="tabs">
-          <button class="tab active" type="button" data-filter="all">Todos</button>
-          <button class="tab" type="button" data-filter="create">Crear</button>
-          <button class="tab" type="button" data-filter="update">Actualizar</button>
-          <button class="tab" type="button" data-filter="error">Errores</button>
+      <!-- Fotos -->
+      <section data-view="photos" class="hidden">
+        <div class="card">
+          <div class="job-head">
+            <h2>Fotos</h2>
+            <span id="dashUpdated" class="muted"></span>
+          </div>
+          <p class="muted">Carpeta de pendientes: <strong id="dashPendingPath"></strong> · al subir se mueven a <strong id="dashDonePath"></strong>.</p>
+          <div class="plan-actions">
+            <button id="photosReviewBtn">Revisar fotos para subir</button>
+            <button id="dashRefreshBtn" class="secondary">Actualizar tablero</button>
+          </div>
+          <div id="dashError" class="error-box hidden"></div>
+          <div class="tiles">
+            <div class="tile"><span id="tilePending">—</span><small>Productos/colores listos para subir</small></div>
+            <div class="tile"><span id="tilePendingPhotos">—</span><small>Fotos pendientes</small></div>
+            <div class="tile warn"><span id="tileBlocked">—</span><small>Carpetas con problemas</small></div>
+            <div class="tile err"><span id="tileNoPhotos">—</span><small>Productos sin fotos en la tienda</small></div>
+            <div class="tile ok"><span id="tileUploaded">—</span><small>Fotos subidas (7 días)</small></div>
+          </div>
         </div>
-        <div id="tableWrap"></div>
+
+        <div class="job-slot"></div>
+
+        <div class="grid">
+          <div class="card">
+            <h2>Pendientes por categoría</h2>
+            <table class="small-table"><thead><tr><th>Categoría</th><th>Carpetas</th><th>Fotos</th><th>Con problema</th></tr></thead><tbody id="dashCategories"></tbody></table>
+          </div>
+          <div class="card">
+            <h2>Avisos de carpetas</h2>
+            <ul id="dashWarnings" class="notes"></ul>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Carpetas pendientes</h2>
+          <div class="table-wrap"><table class="small-table"><thead><tr><th>Carpeta</th><th>Producto</th><th>Fotos</th><th>Estado</th></tr></thead><tbody id="dashPending"></tbody></table></div>
+        </div>
+
+        <div class="card">
+          <div class="job-head">
+            <h2>Productos sin fotos en la tienda</h2>
+            <span id="dashNoPhotosInfo" class="muted"></span>
+          </div>
+          <div class="filters">
+            <input id="dashSearch" type="search" placeholder="Buscar SKU, nombre o categoría…">
+            <label class="check"><input id="dashOnlyPublished" type="checkbox"> Solo publicados</label>
+            <label class="check"><input id="dashOnlyMissing" type="checkbox"> Sin carpeta pendiente</label>
+          </div>
+          <div class="table-wrap"><table class="small-table"><thead><tr><th>SKU</th><th>Producto</th><th>Tipo</th><th>Categoría</th><th>Estado</th><th>Carpeta</th></tr></thead><tbody id="dashNoPhotos"></tbody></table></div>
+        </div>
+
+        <div class="card">
+          <h2>Últimas subidas</h2>
+          <div class="table-wrap"><table class="small-table"><thead><tr><th>SKU / color</th><th>Fotos</th><th>Fecha</th><th>Quién</th></tr></thead><tbody id="dashRecent"></tbody></table></div>
+        </div>
       </section>
-    </section>
 
-    <section id="reportSection" class="card hidden" style="margin-top:16px;">
-      <h2>Reporte</h2>
-      <pre id="report"></pre>
-    </section>
-  </main>
+      <!-- Historial -->
+      <section data-view="history" class="hidden">
+        <div class="card">
+          <h2>Historial de sincronizaciones</h2>
+          <table class="table">
+            <thead><tr><th>Fecha</th><th>Acción</th><th>Quién</th><th>Resultado</th><th>Detalle</th></tr></thead>
+            <tbody id="runsBody"></tbody>
+          </table>
+        </div>
+      </section>
 
-  <script>
-    const form = document.querySelector('#uploadForm');
-    const result = document.querySelector('#result');
-    const stats = document.querySelector('#stats');
-    const ignored = document.querySelector('#ignored');
-    const tableWrap = document.querySelector('#tableWrap');
-    const publishBtn = document.querySelector('#publishBtn');
-    const checkStoreBtn = document.querySelector('#checkStoreBtn');
-    const prepareBtn = document.querySelector('#prepareBtn');
-    const reportSection = document.querySelector('#reportSection');
-    const report = document.querySelector('#report');
-    const storeSection = document.querySelector('#storeSection');
-    const storeStats = document.querySelector('#storeStats');
-    const storeMissing = document.querySelector('#storeMissing');
+      <!-- Usuarios -->
+      <section data-view="users" class="hidden">
+        <div class="card">
+          <h2>Usuarios</h2>
+          <table class="table">
+            <thead><tr><th>Nombre</th><th>Usuario</th><th>Perfil</th><th>Último acceso</th><th>Estado</th><th></th></tr></thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
+        <form id="newUserForm" class="card form-inline">
+          <h2>Nuevo usuario</h2>
+          <label>Nombre <input name="displayName" required></label>
+          <label>Usuario <input name="username" required pattern="[A-Za-z0-9._\-]{3,40}"></label>
+          <label>Contraseña <input name="password" type="password" minlength="8" required></label>
+          <label>Perfil <select name="role" id="roleSelect"></select></label>
+          <button type="submit">Crear</button>
+          <p id="newUserMsg" class="muted"></p>
+        </form>
+        <div class="card">
+          <h2>Qué puede hacer cada perfil</h2>
+          <ul id="rolesHelp" class="muted"></ul>
+        </div>
+      </section>
 
-    let currentAnalysis = null;
-    let currentProducts = [];
-    let activeFilter = 'all';
+      <!-- Conexiones -->
+      <section data-view="connections" class="hidden">
+        <div class="grid">
+          <div class="card">
+            <h2>OneDrive</h2>
+            <p id="onedriveStatus" class="muted">Cargando…</p>
+            <div id="onedriveCode" class="code-box hidden"></div>
+            <button id="onedriveConnectBtn" class="hidden">Conectar OneDrive</button>
+            <button id="onedriveDisconnectBtn" class="secondary hidden">Desconectar</button>
+          </div>
+          <div class="card">
+            <h2>WooCommerce</h2>
+            <p id="wooStatus" class="muted">Cargando…</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
 
-    form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    setLoading(true, 'Analizando...');
-    reportSection.classList.add('hidden');
-    storeSection.classList.add('hidden');
-
-    const data = new FormData(form);
-    const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: data
-    });
-
-    const json = await res.json();
-
-    if (!json.ok) {
-        alert(json.message || 'No se pudo analizar el archivo');
-        setLoading(false);
-        return;
-    }
-
-    currentAnalysis = json.analysis;
-    currentProducts = json.analysis.products;
-
-    renderAnalysis(json.analysis);
-
-    if (json.inventoryOnly) {
-        checkStoreBtn.disabled = true;
-        prepareBtn.disabled = true;
-
-        publishBtn.disabled = false;
-        publishBtn.textContent = 'Actualizar inventario';
-    } else {
-        checkStoreBtn.disabled = false;
-        prepareBtn.disabled = false;
-
-        publishBtn.disabled = false;
-        publishBtn.textContent = '4. Generar payload / publicar';
-    }
-
-    setLoading(false);
-
-}); // <-- ESTA LLAVE Y PARÉNTESIS TE FALTAN
-
-    checkStoreBtn.addEventListener('click', async () => {
-      if (!currentProducts.length) return;
-      setLoading(true, 'Revisando tienda...');
-      const json = await postJson('/api/store/check', {
-        products: currentProducts,
-        mode: document.querySelector('#mode').value,
-      });
-      if (!json.ok) {
-        alert(json.message || 'No se pudo revisar la tienda nueva. Revisa tu .env');
-        report.textContent = JSON.stringify(json, null, 2);
-        reportSection.classList.remove('hidden');
-        setLoading(false);
-        return;
-      }
-      currentProducts = json.analysis.products;
-      renderStoreAnalysis(json.analysis);
-      renderTable(currentProducts);
-      setLoading(false);
-    });
-
-    prepareBtn.addEventListener('click', async () => {
-      if (!currentProducts.length) return;
-      if (!confirm('Esto creará categorías, etiquetas, atributos y términos faltantes en la tienda nueva. ¿Confirmas?')) return;
-      setLoading(true, 'Preparando catálogo...');
-      const json = await postJson('/api/store/prepare', { products: currentProducts, createMissing: true });
-      report.textContent = JSON.stringify(json, null, 2);
-      reportSection.classList.remove('hidden');
-      setLoading(false);
-    });
-
-    publishBtn.addEventListener('click', async () => {
-      const dry = document.querySelector('#publishStatus').value === 'dry';
-      if (!dry && !confirm('Esto intentará crear/actualizar productos y variaciones en WooCommerce. ¿Confirmas?')) return;
-      setLoading(true, dry ? 'Generando payload...' : 'Publicando...');
-
-      const json = await postJson('/api/publish', {
-        products: currentProducts,
-        mode: document.querySelector('#mode').value,
-        dryRun: dry,
-        prepareCatalog: document.querySelector('#prepareCatalog').value === 'yes',
-        defaultStatus: document.querySelector('#defaultStatus').value,
-      });
-      report.textContent = JSON.stringify(json, null, 2);
-      reportSection.classList.remove('hidden');
-      setLoading(false);
-    });
-
-    document.querySelectorAll('.tab').forEach((button) => {
-      button.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach((item) => item.classList.remove('active'));
-        button.classList.add('active');
-        activeFilter = button.dataset.filter;
-        renderTable(currentProducts);
-      });
-    });
-
-    async function postJson(url, body) {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      return res.json();
-    }
-
-    function setLoading(isLoading, label = '') {
-      form.querySelectorAll('button').forEach((btn) => {
-        if (btn.id === 'checkStoreBtn' && !currentProducts.length) return;
-        if (btn.id === 'prepareBtn' && !currentProducts.length) return;
-        if (btn.id === 'publishBtn' && !currentProducts.length) return;
-        btn.disabled = isLoading;
-      });
-      if (isLoading && label) report.textContent = label;
-    }
-
-    function renderAnalysis(analysis) {
-      result.classList.remove('hidden');
-      const s = analysis.summary;
-      stats.innerHTML = `
-        ${stat('Total', s.total)}
-        ${stat('Simples', s.byType.simple || 0)}
-        ${stat('Variables', s.byType.variable || 0)}
-        ${stat('Variaciones', s.byType.variation || 0)}
-        ${stat('Errores', s.errors)}
-        ${stat('Warnings', s.warnings)}
-      `;
-      ignored.textContent = analysis.ignoredColumns.length
-        ? analysis.ignoredColumns.join(', ')
-        : 'No se detectaron columnas completamente vacías.';
-      renderTable(analysis.products);
-    }
-
-    function renderStoreAnalysis(analysis) {
-      storeSection.classList.remove('hidden');
-      const s = analysis.summary;
-      storeStats.innerHTML = `
-        ${stat('Crear', s.toCreate)}
-        ${stat('Actualizar', s.toUpdate)}
-        ${stat('Ignorar', s.toIgnore)}
-        ${stat('Cat. faltantes', s.missingCategories)}
-        ${stat('Atrib. faltantes', s.missingAttributes)}
-        ${stat('Términos faltantes', s.missingTerms)}
-      `;
-      const m = analysis.catalog.missing;
-      storeMissing.innerHTML = `
-        <b>Faltantes detectados:</b><br>
-        Categorías: ${m.categories.slice(0, 20).map(x => escapeHtml(x.path)).join(', ') || 'ninguna'}<br>
-        Etiquetas: ${m.tags.slice(0, 20).map(x => escapeHtml(x.name)).join(', ') || 'ninguna'}<br>
-        Atributos: ${m.attributes.slice(0, 20).map(x => escapeHtml(x.name)).join(', ') || 'ninguno'}<br>
-        Términos: ${m.terms.slice(0, 30).map(x => `${escapeHtml(x.attribute)}:${escapeHtml(x.term)}`).join(', ') || 'ninguno'}
-      `;
-    }
-
-    function renderTable(products) {
-      const filtered = products.filter((p) => {
-        if (activeFilter === 'all') return true;
-        if (activeFilter === 'error') return p.errors?.length;
-        return p.storeStatus?.action === activeFilter;
-      });
-      const rows = filtered.slice(0, 300).map(productRow).join('');
-      tableWrap.innerHTML = `
-        <p class="small">Mostrando máximo 300 filas. Filtro actual: ${escapeHtml(activeFilter)}.</p>
-        <table>
-          <thead>
-            <tr>
-              <th>SKU</th>
-              <th>Nombre</th>
-              <th>Tipo</th>
-              <th>Acción tienda</th>
-              <th>Precio</th>
-              <th>Stock</th>
-              <th>Imágenes</th>
-              <th>Categorías</th>
-              <th>Atributos</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      `;
-    }
-
-    function stat(label, value) {
-      return `<div class="stat"><b>${value}</b><span>${label}</span></div>`;
-    }
-
-    function actionPill(p) {
-      const action = p.storeStatus?.action;
-      if (!action) return '<span class="pill">Sin revisar</span>';
-      if (action === 'create') return '<span class="pill ok">Crear</span>';
-      if (action === 'update') return '<span class="pill blue">Actualizar</span>';
-      if (action === 'ignore') return `<span class="pill warn">Ignorar</span><div class="small">${escapeHtml(p.storeStatus.reason || '')}</div>`;
-      return `<span class="pill warn">${escapeHtml(action)}</span>`;
-    }
-
-    function productRow(p) {
-      const status = p.errors?.length
-        ? `<span class="pill err">${p.errors.map(escapeHtml).join('<br>')}</span>`
-        : p.warnings?.length
-          ? `<span class="pill warn">${p.warnings.map(escapeHtml).join('<br>')}</span>`
-          : `<span class="pill ok">OK</span>`;
-
-      const images = (p.images || []).slice(0, 4).map((img) => {
-        const src = img.url || img.src;
-        return src ? `<img src="${escapeHtml(src)}" alt="">` : '';
-      }).join('');
-
-      const attrs = (p.attributes || []).map((a) => `${escapeHtml(a.name)}: ${escapeHtml((a.values || []).join('|'))}`).join('<br>');
-
-      return `
-        <tr>
-          <td><b>${escapeHtml(p.sku || '')}</b><div class="small">Fila ${p.rowNumber}</div></td>
-          <td>${escapeHtml(p.name || '')}${p.parentSku ? `<div class="small">Padre: ${escapeHtml(p.parentSku)}</div>` : ''}</td>
-          <td>${escapeHtml(p.type || '')}</td>
-          <td>${actionPill(p)}</td>
-          <td>${escapeHtml(p.regularPrice || '')}</td>
-          <td>${escapeHtml(String(p.stock ?? ''))}</td>
-          <td><div class="thumbs">${images}</div><div class="small">${(p.images || []).length} imgs</div></td>
-          <td>${escapeHtml((p.categories || []).join(', '))}</td>
-          <td class="small">${attrs}</td>
-          <td>${status}</td>
-        </tr>
-      `;
-    }
-
-    function escapeHtml(str) {
-      return String(str)
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#039;');
-    }
-  </script>
+  <script src="app.js"></script>
 </body>
 </html>
-    
