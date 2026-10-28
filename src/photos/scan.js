@@ -31,9 +31,11 @@ async function withConcurrency(items, limit, worker) {
  * @param {Function} resolve  SKU en mayúsculas -> destino { kind: 'product', ... } o null
  * @param {Function} resolveChild (nombre de subcarpeta, destino del SKU que la contiene) -> destino o null
  *                            (ej. subcarpeta "Negro" dentro de un producto variable)
- * @returns { root, folders: [{ sku, target, folder, relativePath, files, parentSkuFolder }], warnings, scannedFolders }
+ * @param {object} options    linkOf: ID de carpeta -> { sku, by } relacionado a mano en el panel, o null
+ * @returns { root, folders: [{ sku, target, folder, relativePath, files, parentSkuFolder, linked }], warnings, scannedFolders }
+ *          Las carpetas sin SKU llevan `folderId` y `unmatched` en su aviso, para poder relacionarlas.
  */
-async function scanPhotos(rootPath, resolve, resolveChild, { onProgress = () => {} } = {}) {
+async function scanPhotos(rootPath, resolve, resolveChild, { onProgress = () => {}, linkOf = () => null } = {}) {
   const root = await onedrive.getItemByPath(rootPath);
   if (!root) {
     const error = new Error(`No existe la carpeta "${rootPath}" en OneDrive.`);
@@ -61,7 +63,20 @@ async function scanPhotos(rootPath, resolve, resolveChild, { onProgress = () => 
 
       let sku = null;
       let target = null;
-      for (const candidate of relativePath ? skuCandidates(item.name) : []) {
+      const where = relativePath || '(carpeta raíz)';
+      // Relación hecha a mano en el panel: manda sobre el nombre de la carpeta.
+      const linked = relativePath ? linkOf(item.id) : null;
+      if (linked) {
+        target = resolve(String(linked.sku).trim().toUpperCase());
+        if (target) sku = String(linked.sku).trim().toUpperCase();
+        if (!target) {
+          warnings.push({
+            path: where, folderId: item.id, unmatched: true, linked,
+            message: `Se relacionó a mano con "${linked.sku}", pero ese SKU ya no está en el Excel. Quita la relación o relaciónala con otro SKU.`,
+          });
+        }
+      }
+      for (const candidate of relativePath && !sku ? skuCandidates(item.name) : []) {
         target = resolve(candidate);
         if (target) {
           sku = candidate;
@@ -72,14 +87,16 @@ async function scanPhotos(rootPath, resolve, resolveChild, { onProgress = () => 
         target = resolveChild(item.name.trim(), ancestorTarget);
         if (target) sku = `${ancestorTarget.sku} / ${item.name.trim()}`;
       }
-      const where = relativePath || '(carpeta raíz)';
 
       if (sku) {
-        folders.push({ sku, target, folder: item, relativePath, files: images, parentSkuFolder: skuAncestor });
+        const byLink = Boolean(linked) && sku === String(linked.sku).trim().toUpperCase();
+        folders.push({ sku, target, folder: item, relativePath, files: images, parentSkuFolder: skuAncestor, linked: byLink ? linked : null });
         if (!images.length && !subfolders.length) warnings.push({ path: where, message: 'Carpeta de SKU sin fotos.' });
-      } else if (images.length) {
+      } else if (images.length && !linked) {
         warnings.push({
           path: where,
+          folderId: relativePath ? item.id : null,
+          unmatched: Boolean(relativePath),
           message: relativePath
             ? `${images.length} foto(s) en una carpeta cuyo nombre no coincide con ningún SKU ni estilo+color de la tienda. ¿Está mal escrito, o el producto aún no se ha dado de alta?`
             : `${images.length} foto(s) sueltas en la carpeta raíz: deben ir dentro de una carpeta con el SKU.`,

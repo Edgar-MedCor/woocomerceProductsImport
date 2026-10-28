@@ -81,6 +81,17 @@ async function migrate() {
     -- Enlace al producto en la tienda, para consultarlo desde el historial.
     ALTER TABLE change_log ADD COLUMN IF NOT EXISTS url TEXT;
 
+    -- Carpetas de fotos cuyo nombre no coincide con ningún SKU y que alguien
+    -- relacionó a mano desde el panel. Se guarda el ID de OneDrive (no el
+    -- nombre), así la relación sigue aunque la carpeta se renombre o se mueva.
+    CREATE TABLE IF NOT EXISTS photo_folder_links (
+      folder_id TEXT PRIMARY KEY,
+      folder_path TEXT,
+      sku TEXT NOT NULL,
+      created_by BIGINT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sync_runs_started ON sync_runs(started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_change_log_run ON change_log(run_id);
     CREATE INDEX IF NOT EXISTS idx_change_log_sku ON change_log(sku);

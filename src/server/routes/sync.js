@@ -11,6 +11,7 @@ const { pool } = require('../db');
 const { requirePermission } = require('../auth');
 const { can, allowedFields, historyTypes } = require('../permissions');
 const dashboard = require('../../photos/dashboard');
+const { loadLinks, saveLink, removeLink } = require('../../photos/links');
 const orphans = require('../../report/orphans');
 const { TYPE } = require('../../push/fields');
 
@@ -50,6 +51,57 @@ router.get('/photos/dashboard', requirePermission('photos'), (_req, res) => {
 router.post('/photos/dashboard/refresh', requirePermission('photos'), (_req, res) => {
   dashboard.refreshDashboard(pool);
   res.status(202).json({ ok: true, ...dashboard.getDashboard() });
+});
+
+// ---------- Relacionar a mano una carpeta cuyo nombre no coincide con ningún SKU ----------
+// Queda en el Historial (área de fotos) quién relacionó o quitó qué carpeta.
+async function logLink(user, { folderPath, oldSku, newSku }) {
+  const summary = newSku ? { Carpeta: folderPath, 'Relacionada con': newSku } : { Carpeta: folderPath, 'Se quitó la relación con': oldSku };
+  const { rows } = await pool.query(
+    `INSERT INTO sync_runs (type, user_id, status, finished_at, summary) VALUES ('photos-link', $1, 'success', now(), $2) RETURNING id`,
+    [user.id, JSON.stringify(summary)],
+  );
+  await pool.query(
+    'INSERT INTO change_log (run_id, woo_id, sku, field, old_value, new_value, result) VALUES ($1,NULL,$2,$3,$4,$5,$6)',
+    [rows[0].id, newSku || oldSku, 'Carpeta de fotos', oldSku || null, newSku ? `${folderPath} → ${newSku}` : null, 'ok'],
+  );
+}
+
+// Paso previo: a qué producto iría (para confirmar antes de guardar).
+router.post('/photos/links/check', requirePermission('photos'), async (req, res, next) => {
+  try {
+    res.json({ ok: true, target: await photos.checkSku(req.body?.sku) });
+  } catch (error) {
+    error.status ??= 400;
+    next(error);
+  }
+});
+
+router.post('/photos/links', requirePermission('photos'), async (req, res, next) => {
+  try {
+    const { folderId, folderPath } = req.body || {};
+    if (!folderId) return res.status(400).json({ ok: false, message: 'Falta la carpeta.' });
+    const target = await photos.checkSku(req.body?.sku);
+    await saveLink(pool, { folderId: String(folderId), folderPath, sku: target.sku, userId: req.user.id });
+    await logLink(req.user, { folderPath, newSku: target.sku });
+    dashboard.refreshDashboard(pool);
+    res.status(201).json({ ok: true, target, ...dashboard.getDashboard() });
+  } catch (error) {
+    error.status ??= 400;
+    next(error);
+  }
+});
+
+router.delete('/photos/links/:folderId', requirePermission('photos'), async (req, res, next) => {
+  try {
+    const removed = await removeLink(pool, req.params.folderId);
+    if (!removed) return res.status(404).json({ ok: false, message: 'Esa carpeta no tenía relación.' });
+    await logLink(req.user, { folderPath: removed.folder_path, oldSku: removed.sku });
+    dashboard.refreshDashboard(pool);
+    res.json({ ok: true, ...dashboard.getDashboard() });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // ---------- Reporte de variantes sueltas (permiso que asigna el administrador) ----------
@@ -145,7 +197,7 @@ router.post('/photos/review', requirePermission('photos'), async (req, res, next
   try {
     const user = req.user;
     const job = await jobs.start('photos-review', user, async ({ log, progress }) => {
-      const review = await photos.reviewPhotos({ log, progress });
+      const review = await photos.reviewPhotos({ log, progress, links: await loadLinks(pool) });
       pendingPhotos = { userId: user.id, review };
       return { summary: review.summary, details: photos.publicPhotos(review) };
     });

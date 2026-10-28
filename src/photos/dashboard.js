@@ -3,6 +3,7 @@
 const config = require('../config');
 const store = require('../woo/store');
 const { reviewPhotos } = require('../commands/photos');
+const { loadLinks } = require('./links');
 
 const STATUS = { publish: 'Publicado', draft: 'Borrador', pending: 'En revisión', private: 'Privado' };
 const cleanFolder = (name) => name.replace(/^F\.S\.\s*/i, '').trim();
@@ -12,7 +13,7 @@ async function buildDashboard(pool, { log = () => {} } = {}) {
   let review = null;
   let pendingError = null;
   try {
-    review = await reviewPhotos({ log });
+    review = await reviewPhotos({ log, links: await loadLinks(pool) });
   } catch (error) {
     pendingError = error.message;
   }
@@ -73,6 +74,8 @@ async function buildDashboard(pool, { log = () => {} } = {}) {
         fotos: i.files.length,
         estado: i.errors.length ? `Bloqueado: ${i.errors.join(' ')}` : i.deferred ? 'Siguiente tanda' : 'Listo para subir',
         ok: !i.errors.length,
+        folderId: i.folder.id,
+        linked: i.linked ? { sku: i.linked.sku, by: i.linked.by } : null,
       })),
     },
     avisos: review?.warnings || [],
@@ -90,18 +93,27 @@ async function buildDashboard(pool, { log = () => {} } = {}) {
 // tienda y OneDrive puede tardar); no bloquea las sincronizaciones.
 let cache = null;
 let running = null;
+let again = false; // se pidió actualizar mientras ya corría (ej. se relacionó una carpeta)
 
 function getDashboard() {
   return { dashboard: cache, refreshing: Boolean(running) };
 }
 
 function refreshDashboard(pool) {
-  if (!running) {
-    running = buildDashboard(pool)
-      .then((d) => { cache = d; })
-      .catch((error) => { cache = { ...(cache || {}), error: error.message, updatedAt: new Date().toISOString() }; })
-      .finally(() => { running = null; });
+  if (running) {
+    again = true;
+    return running;
   }
+  running = buildDashboard(pool)
+    .then((d) => { cache = d; })
+    .catch((error) => { cache = { ...(cache || {}), error: error.message, updatedAt: new Date().toISOString() }; })
+    .finally(() => {
+      running = null;
+      if (again) {
+        again = false;
+        refreshDashboard(pool);
+      }
+    });
   return running;
 }
 

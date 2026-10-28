@@ -98,17 +98,43 @@ function buildTargets(rows) {
   return { resolve, resolveChild };
 }
 
-/** Paso 1: recorre las carpetas y arma la lista de qué fotos van a qué producto. */
-async function reviewPhotos({ log = console.log, progress = () => {} } = {}) {
-  log('Leyendo los SKUs del Excel...');
+async function loadTargets() {
   const excelBuffer = await onedrive.downloadFile(config.excelPath());
   if (!excelBuffer) throw new Error('No existe el Excel en OneDrive. Haz primero "Traer de la tienda".');
   const { rows } = await readWorkbook(excelBuffer);
-  const { resolve, resolveChild } = buildTargets(rows);
+  return buildTargets(rows);
+}
+
+const describe = (t) => ({
+  label: t.kind === 'color' ? `${t.sku} / ${t.color}` : t.sku,
+  name: t.name || null,
+  type: t.kind === 'color' ? `Color (fotos para sus ${t.variations.length} variación(es))` : t.type,
+});
+
+/**
+ * A qué producto iría una carpeta relacionada con este SKU (mismas reglas que
+ * el nombre de carpeta: SKU exacto o estilo+color). Error si no se reconoce.
+ */
+async function checkSku(sku) {
+  const code = String(sku || '').trim().toUpperCase();
+  if (!code) throw new Error('Escribe el SKU.');
+  const target = (await loadTargets()).resolve(code);
+  if (!target) throw new Error(`"${code}" no coincide con ningún SKU ni estilo+color del Excel. Revisa que esté bien escrito o que el producto ya esté dado de alta.`);
+  return { sku: code, ...describe(target) };
+}
+
+/**
+ * Paso 1: recorre las carpetas y arma la lista de qué fotos van a qué producto.
+ * `links`: relaciones carpeta -> SKU hechas a mano en el panel (ver photos/links.js).
+ */
+async function reviewPhotos({ log = console.log, progress = () => {}, links = new Map() } = {}) {
+  log('Leyendo los SKUs del Excel...');
+  const { resolve, resolveChild } = await loadTargets();
 
   log(`Recorriendo "${config.photos.pendingPath}" en OneDrive...`);
   const scan = await scanPhotos(config.photos.pendingPath, resolve, resolveChild, {
     onProgress: (n) => progress(n, null, 'Carpetas revisadas'),
+    linkOf: (folderId) => links.get(folderId) || null,
   });
 
   const items = [];
@@ -123,10 +149,12 @@ async function reviewPhotos({ log = console.log, progress = () => {} } = {}) {
       type: t.kind === 'color' ? 'Color' : t.type,
       folder: folder.folder,
       parentSkuFolder: folder.parentSkuFolder,
+      linked: folder.linked,
       files: folder.files,
       errors: [],
       warnings: [],
     };
+    if (folder.linked) item.warnings.push(`Carpeta relacionada a mano con ${folder.linked.sku}${folder.linked.by ? ` por ${folder.linked.by}` : ''}.`);
     if (t.kind === 'color') {
       if (!t.parentId || t.variations.some((v) => !v.id)) item.errors.push('El producto o alguna de sus variaciones todavía no existe en la tienda. Sube primero los datos.');
     } else {
@@ -330,4 +358,4 @@ function publicPhotos(review, { withResults = false } = {}) {
   };
 }
 
-module.exports = { reviewPhotos, applyPhotos, publicPhotos, donePath, buildTargets };
+module.exports = { reviewPhotos, applyPhotos, publicPhotos, donePath, buildTargets, checkSku };

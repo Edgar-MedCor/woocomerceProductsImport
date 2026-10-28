@@ -3,7 +3,7 @@
 //   fields:  campos que puede subir a la tienda (null = todos).
 //   history: tipos de sincronización que ve en el Historial (null = todos).
 const EXCEL_RUNS = ['pull', 'review', 'push', 'undo'];
-const PHOTO_RUNS = ['photos-review', 'photos'];
+const PHOTO_RUNS = ['photos-review', 'photos', 'photos-link'];
 
 // Permisos que el administrador da o quita a cada usuario, aparte de su perfil.
 const GRANTABLE = {

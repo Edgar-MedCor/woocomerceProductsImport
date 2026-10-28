@@ -70,6 +70,7 @@ const TYPE_LABEL = {
   'photos-review': 'Revisar fotos',
   photos: 'Subir fotos',
   undo: 'Deshacer push',
+  'photos-link': 'Relacionar carpeta',
 };
 // Qué revisión habilita qué subida.
 const PUSH_STEP = {
@@ -387,15 +388,55 @@ function renderDashboard(refreshing) {
     ? d.pending.porCategoria.map((c) => el('tr', {}, el('td', {}, c.categoria), el('td', {}, String(c.carpetas)), el('td', {}, String(c.fotos)), el('td', { class: c.bloqueadas ? 'err' : 'muted' }, String(c.bloqueadas))))
     : [none(4, 'No hay carpetas pendientes.')]));
   $('#dashWarnings').replaceChildren(...(d.avisos.length
-    ? d.avisos.map((w) => el('li', {}, el('strong', {}, w.path), ` — ${w.message}`))
+    ? d.avisos.map((w) => el('li', {}, el('strong', {}, w.path), ` — ${w.message}`, w.unmatched && w.folderId ? linkForm(w) : null))
     : [el('li', { class: 'muted' }, 'Sin avisos.')]));
   $('#dashPending').replaceChildren(...(d.pending.items.length
-    ? d.pending.items.map((i) => el('tr', {}, el('td', { class: 'muted' }, i.path), el('td', {}, el('strong', {}, i.sku), el('div', { class: 'muted' }, i.name || '')), el('td', {}, String(i.fotos)), el('td', { class: i.ok ? '' : 'err' }, i.estado)))
+    ? d.pending.items.map((i) => el('tr', {}, el('td', { class: 'muted' }, i.path), el('td', {}, el('strong', {}, i.sku), el('div', { class: 'muted' }, i.name || '')), el('td', {}, String(i.fotos)),
+      el('td', { class: i.ok ? '' : 'err' }, i.estado, i.linked
+        ? el('div', { class: 'muted' }, `Relacionada a mano con ${i.linked.sku}${i.linked.by ? ` por ${i.linked.by}` : ''}. `,
+          el('button', { class: 'link', onclick: () => unlinkFolder(i.folderId, i.path) }, 'Quitar relación'))
+        : null)))
     : [none(4, 'No hay carpetas pendientes.')]));
   $('#dashRecent').replaceChildren(...(d.subidas.recientes.length
     ? d.subidas.recientes.map((r) => el('tr', {}, el('td', {}, r.sku), el('td', {}, String(r.fotos)), el('td', {}, fmtDate(r.fecha)), el('td', {}, r.usuario || '—')))
     : [none(4, 'Todavía no se han subido fotos desde el panel.')]));
   renderNoPhotos();
+}
+
+// Carpeta cuyo nombre no coincide con ningún SKU: se relaciona a mano escribiendo el SKU.
+function linkForm(w) {
+  const input = el('input', { type: 'text', placeholder: 'SKU o estilo+color', 'aria-label': `SKU para la carpeta ${w.path}` });
+  const button = el('button', { type: 'submit', class: 'small' }, 'Relacionar');
+  const form = el('form', { class: 'link-form', onsubmit: (e) => { e.preventDefault(); linkFolder(w, input.value, button); } }, input, button);
+  if (w.linked) form.append(el('button', { type: 'button', class: 'small secondary', onclick: () => unlinkFolder(w.folderId, w.path) }, 'Quitar relación'));
+  return form;
+}
+
+async function linkFolder(w, sku, button) {
+  button.disabled = true;
+  try {
+    const { target } = await api('/sync/photos/links/check', { method: 'POST', body: { sku } });
+    const what = `${target.label}${target.name ? ` — ${target.name}` : ''} (${target.type})`;
+    if (!confirm(`¿Relacionar la carpeta "${w.path}" con ${what}? Sus fotos se subirán a ese producto en la siguiente revisión.`)) return;
+    await api('/sync/photos/links', { method: 'POST', body: { folderId: w.folderId, folderPath: w.path, sku } });
+    renderDashboard(true);
+    watchDashboard();
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function unlinkFolder(folderId, path) {
+  if (!confirm(`¿Quitar la relación de la carpeta "${path}"? Volverá a aparecer como carpeta sin SKU.`)) return;
+  try {
+    await api(`/sync/photos/links/${encodeURIComponent(folderId)}`, { method: 'DELETE' });
+    renderDashboard(true);
+    watchDashboard();
+  } catch (error) {
+    alert(error.message);
+  }
 }
 
 function renderNoPhotos() {
