@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { promisify } = require('util');
 const { pool } = require('./db');
-const { ROLES, can } = require('./permissions');
+const { ROLES, can, permissionsOf } = require('./permissions');
 
 const scrypt = promisify(crypto.scrypt);
 const KEY_LENGTH = 64;
@@ -68,7 +68,8 @@ function publicUser(user) {
     roleLabel: ROLES[user.role]?.label || user.role,
     active: user.active,
     lastLoginAt: user.last_login_at,
-    permissions: ROLES[user.role]?.can || [],
+    permissions: permissionsOf(user),
+    extraPermissions: user.extra_permissions || [],
   };
 }
 
@@ -95,7 +96,7 @@ function requireAuth(req, res, next) {
 function requirePermission(action) {
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ ok: false, message: 'Inicia sesión.' });
-    if (!can(req.user.role, action)) return res.status(403).json({ ok: false, message: 'Tu perfil no tiene permiso para esta acción.' });
+    if (!can(req.user, action)) return res.status(403).json({ ok: false, message: 'Tu perfil no tiene permiso para esta acción.' });
     next();
   };
 }

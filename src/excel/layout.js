@@ -53,6 +53,7 @@ const COLUMNS = [
   { key: 'images', header: 'Imágenes (URLs, la 1ª es la principal)', width: 40, editable: true, level: 'all' },
   ...META_COLUMNS.map((m) => ({ ...m, width: 13, editable: true, level: 'all' })),
   { key: 'modified', header: 'Últ. cambio en tienda', width: 17, editable: false, level: 'all' },
+  { key: 'url', header: 'Ver en tienda', width: 30, editable: false, level: 'all' },
 ];
 
 const TYPE = { simple: 'Simple', variable: 'Variable', variation: 'Variación' };
@@ -60,6 +61,8 @@ const TYPE = { simple: 'Simple', variable: 'Variable', variation: 'Variación' }
 const STOCK_STATUS = { instock: 'Disponible', outofstock: 'Agotado', onbackorder: 'Sobre pedido' };
 const PRODUCT_STATUS = { publish: 'Publicado', draft: 'Borrador', pending: 'En revisión', private: 'Privado' };
 const VARIATION_STATUS = { publish: 'Activa', private: 'Desactivada' };
+// Estado especial del Excel: no existe en WooCommerce; el push manda la fila a la papelera.
+const DELETE_STATUS = 'Eliminar';
 const YES_NO = { true: 'Sí', false: 'No' };
 const LIST_SEP = ' | ';
 
@@ -109,6 +112,7 @@ const common = (item) => ({
   height: num(item.dimensions?.height),
   ...metaValues(item),
   modified: date(item.date_modified),
+  url: text(item.permalink),
 });
 
 function productRow(p, categoriesById) {
@@ -150,6 +154,7 @@ function variationRow(v, parent) {
     salePrice: num(v.sale_price),
     ...splitAttributes(v.attributes, (a) => a.option || 'Cualquiera'),
     images: v.image?.src || null,
+    url: text(v.permalink) || text(parent.permalink),
     _parentId: parent.id,
   };
 }
@@ -174,6 +179,6 @@ function catalogToRows({ products, categories }) {
 }
 
 module.exports = {
-  COLUMNS, ATTRIBUTE_COLUMNS, META_COLUMNS, TYPE, STOCK_STATUS, PRODUCT_STATUS, VARIATION_STATUS, YES_NO, LIST_SEP,
+  COLUMNS, ATTRIBUTE_COLUMNS, META_COLUMNS, TYPE, STOCK_STATUS, PRODUCT_STATUS, VARIATION_STATUS, DELETE_STATUS, YES_NO, LIST_SEP,
   catalogToRows,
 };

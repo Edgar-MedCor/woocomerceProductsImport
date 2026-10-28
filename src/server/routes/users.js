@@ -1,7 +1,7 @@
 const express = require('express');
 const { pool } = require('../db');
 const { createUser, setPassword, validateRole, findUserById, publicUser } = require('../auth');
-const { ROLES } = require('../permissions');
+const { ROLES, GRANTABLE } = require('../permissions');
 
 const router = express.Router();
 
@@ -12,6 +12,7 @@ router.get('/', async (_req, res, next) => {
       ok: true,
       users: rows.map(publicUser),
       roles: Object.entries(ROLES).map(([key, r]) => ({ key, label: r.label, can: r.can })),
+      grantable: Object.entries(GRANTABLE).map(([key, label]) => ({ key, label })),
     });
   } catch (error) {
     next(error);
@@ -29,26 +30,30 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-// Cambiar nombre, rol, activar/desactivar o restablecer contraseña.
+// Cambiar nombre, rol, permisos extra, activar/desactivar o restablecer contraseña.
 router.patch('/:id', async (req, res, next) => {
   try {
     const target = await findUserById(req.params.id);
     if (!target) return res.status(404).json({ ok: false, message: 'Usuario no encontrado.' });
 
-    const { displayName, role, active, password } = req.body || {};
+    const { displayName, role, active, password, permissions } = req.body || {};
     const isSelf = String(target.id) === String(req.user.id);
     if (isSelf && (active === false || (role && role !== 'admin'))) {
       return res.status(400).json({ ok: false, message: 'No puedes desactivarte ni quitarte el rol de administrador a ti mismo.' });
     }
     if (role !== undefined) validateRole(role);
+    if (permissions !== undefined && (!Array.isArray(permissions) || permissions.some((p) => !GRANTABLE[p]))) {
+      return res.status(400).json({ ok: false, message: `Permisos inválidos. Usa: ${Object.keys(GRANTABLE).join(', ')}` });
+    }
 
     await pool.query(
       `UPDATE users SET
          display_name = COALESCE($2, display_name),
          role = COALESCE($3, role),
-         active = COALESCE($4, active)
+         active = COALESCE($4, active),
+         extra_permissions = COALESCE($5, extra_permissions)
        WHERE id = $1`,
-      [target.id, displayName || null, role || null, typeof active === 'boolean' ? active : null],
+      [target.id, displayName || null, role || null, typeof active === 'boolean' ? active : null, permissions ? [...new Set(permissions)] : null],
     );
     if (password) await setPassword(target.id, password);
 

@@ -1,7 +1,7 @@
 // Reglas por campo: cómo se compara un valor del Excel con la base/tienda, a
 // qué tipo de fila aplica y cómo se valida.
 const {
-  COLUMNS, ATTRIBUTE_COLUMNS, META_COLUMNS, TYPE, STOCK_STATUS, PRODUCT_STATUS, VARIATION_STATUS, YES_NO, LIST_SEP,
+  COLUMNS, ATTRIBUTE_COLUMNS, META_COLUMNS, TYPE, STOCK_STATUS, PRODUCT_STATUS, VARIATION_STATUS, DELETE_STATUS, YES_NO, LIST_SEP,
 } = require('../excel/layout');
 
 const COL = Object.fromEntries(COLUMNS.map((c) => [c.key, c]));
@@ -12,6 +12,7 @@ const META_KEYS = new Set(META_COLUMNS.map((m) => m.key));
 const ANY = 'cualquiera';
 
 const isBlank = (v) => v === null || v === undefined || String(v).trim() === '';
+const isDelete = (status) => String(status ?? '').trim().toLowerCase() === DELETE_STATUS.toLowerCase();
 
 function parseNumber(v) {
   if (isBlank(v)) return null;
@@ -79,7 +80,7 @@ function validateRow(row, type) {
   if (stock !== null && !Number.isNaN(stock) && !Number.isInteger(stock)) errors.push('El inventario debe ser un número entero');
 
   const statuses = type === TYPE.variation ? VARIATION_STATUS_SLUG : PRODUCT_STATUS_SLUG;
-  if (!isBlank(row.status) && !statuses[String(row.status).trim().toLowerCase()]) {
+  if (!isBlank(row.status) && !isDelete(row.status) && !statuses[String(row.status).trim().toLowerCase()]) {
     errors.push(`Estado "${row.status}" no válido. Usa: ${Object.values(type === TYPE.variation ? VARIATION_STATUS : PRODUCT_STATUS).join(', ')}`);
   }
   if (!isBlank(row.stockStatus) && !STOCK_STATUS_SLUG[String(row.stockStatus).trim().toLowerCase()]) {
@@ -92,7 +93,7 @@ function validateRow(row, type) {
 }
 
 module.exports = {
-  COL, ATTRIBUTE_COLUMNS, META_COLUMNS, ATTR_KEYS, META_KEYS, TYPE, ANY,
+  COL, ATTRIBUTE_COLUMNS, META_COLUMNS, ATTR_KEYS, META_KEYS, TYPE, ANY, DELETE_STATUS,
   STOCK_STATUS_SLUG, PRODUCT_STATUS_SLUG, VARIATION_STATUS_SLUG, EDITABLE_ON_UPDATE,
-  isBlank, parseNumber, splitList, splitCategories, canonical, same, applies, normalizeType, validateRow,
+  isBlank, isDelete, parseNumber, splitList, splitCategories, canonical, same, applies, normalizeType, validateRow,
 };

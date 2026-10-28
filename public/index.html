@@ -26,6 +26,7 @@
       <nav id="tabs">
         <button data-tab="sync" data-perm="pull" class="active">Catálogo (Excel)</button>
         <button data-tab="photos" data-perm="photos">Fotos</button>
+        <button data-tab="orphans" data-perm="orphans">Variantes sueltas</button>
         <button data-tab="history" data-perm="history">Historial</button>
         <button data-tab="users" data-perm="users">Usuarios</button>
         <button data-tab="connections" data-perm="connections">Conexiones</button>
@@ -157,6 +158,30 @@
         </div>
       </section>
 
+      <!-- Variantes sueltas -->
+      <section data-view="orphans" class="hidden">
+        <div class="card">
+          <div class="job-head">
+            <h2>Variantes sueltas</h2>
+            <span id="orphUpdated" class="muted"></span>
+          </div>
+          <p class="muted">Productos simples cuyo SKU tiene forma de variación (estilo + talla + color), agrupados por estilo. Para convertirlos, en el Excel cambia el Tipo de cada fila a "Variación" y escribe el estilo en "SKU padre". Si el padre no existe, agrega antes una fila Variable con ese SKU; si existe como Simple, cámbiale el Tipo a "Variable".</p>
+          <div class="plan-actions">
+            <button id="orphRefreshBtn" class="secondary">Actualizar reporte</button>
+          </div>
+          <div id="orphError" class="error-box hidden"></div>
+          <div class="tiles">
+            <div class="tile warn"><span id="orphStyles">—</span><small>Estilos con variantes sueltas</small></div>
+            <div class="tile err"><span id="orphProducts">—</span><small>Productos simples por revisar</small></div>
+            <div class="tile ok"><span id="orphWithParent">—</span><small>Estilos que ya tienen padre Variable</small></div>
+          </div>
+          <div class="filters">
+            <input id="orphSearch" type="search" placeholder="Buscar estilo, SKU o nombre…">
+          </div>
+          <div class="table-wrap"><table class="small-table"><thead><tr><th>Estilo / padre</th><th>Productos simples sueltos</th></tr></thead><tbody id="orphBody"></tbody></table></div>
+        </div>
+      </section>
+
       <!-- Historial -->
       <section data-view="history" class="hidden">
         <div class="card">
@@ -173,7 +198,7 @@
         <div class="card">
           <h2>Usuarios</h2>
           <table class="table">
-            <thead><tr><th>Nombre</th><th>Usuario</th><th>Perfil</th><th>Último acceso</th><th>Estado</th><th></th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Usuario</th><th>Perfil</th><th>Permisos extra</th><th>Último acceso</th><th>Estado</th><th></th></tr></thead>
             <tbody id="usersBody"></tbody>
           </table>
         </div>

@@ -72,13 +72,23 @@ async function fetchProductsBySkus(skus) {
   return out;
 }
 
-async function fetchAllVariations(parentId) {
-  return getAll(`products/${parentId}/variations`, { context: 'edit', ...lang() });
+// allLanguages: también las variaciones de una traducción (WPML filtra por idioma).
+async function fetchAllVariations(parentId, { allLanguages = false } = {}) {
+  return getAll(`products/${parentId}/variations`, { context: 'edit', ...(allLanguages ? { lang: 'all' } : lang()) });
 }
 
-// Todos los productos (sin variaciones) con solo los campos del tablero de fotos.
+// Productos por ID en cualquier idioma (las traducciones de WPML tienen otro ID).
+async function fetchProductsAllLanguages(ids) {
+  const out = [];
+  for (const part of chunk([...new Set(ids)], 100)) {
+    out.push(...await getAll('products', { include: part.join(','), status: 'any', context: 'edit', lang: 'all' }));
+  }
+  return out;
+}
+
+// Todos los productos (sin variaciones) con solo los campos del tablero de fotos y del reporte de variantes sueltas.
 async function fetchProductsLite() {
-  return getAll('products', { status: 'any', _fields: 'id,sku,name,type,status,images,categories', ...lang() });
+  return getAll('products', { status: 'any', _fields: 'id,sku,name,type,status,images,categories,permalink', ...lang() });
 }
 
 async function createTerm(taxonomyEndpoint, data) {
@@ -115,5 +125,5 @@ async function batch(endpoint, { create = [], update = [] }, onBatch = () => {})
 }
 
 module.exports = {
-  request, fetchTaxonomies, fetchProductsByIds, fetchVariationsByIds, fetchProductsBySkus, fetchAllVariations, fetchProductsLite, createTerm, batch,
+  request, fetchTaxonomies, fetchProductsByIds, fetchVariationsByIds, fetchProductsBySkus, fetchAllVariations, fetchProductsAllLanguages, fetchProductsLite, createTerm, batch,
 };

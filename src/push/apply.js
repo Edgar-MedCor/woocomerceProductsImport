@@ -1,6 +1,8 @@
 // Ejecuta un plan del push en la tienda: crea términos que falten, luego
-// productos (simples y variables) y al final variaciones, por lotes.
+// productos (simples y variables), variaciones por lotes y al final lo que se
+// manda a la papelera.
 const store = require('../woo/store');
+const trash = require('./trash');
 const {
   ATTRIBUTE_COLUMNS, META_COLUMNS, TYPE, ANY,
   STOCK_STATUS_SLUG, PRODUCT_STATUS_SLUG, VARIATION_STATUS_SLUG,
@@ -120,7 +122,14 @@ async function buildPayload(item, terms, ctx) {
   if (keys.has('images')) {
     const urls = splitList(row.images, ',');
     const current = ctx.storeProduct;
-    if (isVariation) p.image = urls.length ? imagePayload(urls.slice(0, 1), [ctx.storeVariation?.image])[0] : {};
+    if (isVariation && item.replaces) {
+      // Simple que pasa a variación: reutiliza sus fotos (sin volver a subirlas); la
+      // primera es la principal y las demás van a la galería de la variación.
+      const [main, ...rest] = imagePayload(urls, item.replaces.product?.images);
+      p.image = main || {};
+      const gallery = rest.filter((img) => img.id).map((img) => img.id);
+      if (gallery.length) p.gallery_image_ids = gallery;
+    } else if (isVariation) p.image = urls.length ? imagePayload(urls.slice(0, 1), [ctx.storeVariation?.image])[0] : {};
     else p.images = imagePayload(urls, current?.images);
   }
 
@@ -129,7 +138,7 @@ async function buildPayload(item, terms, ctx) {
     if (item.kind === 'create' || attrKeys.some((k) => keys.has(k))) p.attributes = variationAttributes(row, ctx.parentAttributes);
   } else {
     if (item.attributes) p.attributes = item.attributes.map(({ id, name, options, visible, variation, position }) => (id ? { id, options, visible, variation, position } : { name, options, visible, variation, position }));
-    if (item.kind === 'create') p.type = item.type === TYPE.variable ? 'variable' : 'simple';
+    if (item.kind === 'create' || keys.has('type')) p.type = item.type === TYPE.variable ? 'variable' : 'simple';
   }
   return p;
 }
@@ -146,9 +155,11 @@ async function applyPlan(plan, { log = () => {}, onProgress = () => {} } = {}) {
 
   const terms = await ensureTerms(plan, log);
   const fail = (item, message) => { item.result = { ok: false, message }; };
+  const deletes = live.filter((i) => i.kind === 'delete');
+  const saves = live.filter((i) => i.kind !== 'delete');
 
   // 1. Productos simples y variables.
-  const products = live.filter((i) => i.type !== TYPE.variation);
+  const products = saves.filter((i) => i.type !== TYPE.variation);
   const creates = [];
   const updates = [];
   for (const item of products) {
@@ -177,7 +188,7 @@ async function applyPlan(plan, { log = () => {}, onProgress = () => {} } = {}) {
   // 2. Variaciones, agrupadas por producto padre.
   const idByRow = new Map(plan.items.filter((i) => i.type === TYPE.variable).map((i) => [i.row, i.result?.newId || i.id]));
   const byParent = new Map();
-  for (const item of live.filter((i) => i.type === TYPE.variation)) {
+  for (const item of saves.filter((i) => i.type === TYPE.variation)) {
     const parentItem = plan.items.find((i) => i.row === item.parentRow);
     if (parentItem?.result && !parentItem.result.ok) {
       fail(item, 'No se guardó el producto padre; corrige su error y vuelve a subir.');
@@ -204,16 +215,64 @@ async function applyPlan(plan, { log = () => {}, onProgress = () => {} } = {}) {
         tick(1);
       }
     }
+    // Simples que pasan a ser variación: primero se libera su SKU y van a la papelera.
+    for (const entry of vCreates.filter((c) => c.item.replaces)) {
+      const { replaces } = entry.item;
+      try {
+        replaces.trashed = await trash.snapshotProduct(replaces.product);
+        log(`Mandando a la papelera el producto simple ${replaces.sku || replaces.id} (pasa a variación)...`);
+        await trash.trashProduct(replaces.trashed, { clearSku: true });
+      } catch (error) {
+        replaces.trashed = null;
+        fail(entry.item, `No se pudo mandar a la papelera el producto simple ID ${replaces.id}: ${error.message}. No se creó la variación.`);
+        entry.skip = true;
+        tick(1);
+      }
+    }
+    const toCreate = vCreates.filter((c) => !c.skip);
+
     log(`Guardando variaciones de "${parent?.name || parentId}"...`);
-    const vr = await store.batch(`products/${parentId}/variations`, { create: vCreates.map((c) => c.payload), update: vUpdates.map((u) => u.payload) }, tick);
-    vCreates.forEach(({ item }, i) => {
+    const vr = await store.batch(`products/${parentId}/variations`, { create: toCreate.map((c) => c.payload), update: vUpdates.map((u) => u.payload) }, tick);
+    for (const [i, { item }] of toCreate.entries()) {
       const r = vr.create[i];
-      item.result = r.ok ? { ok: true, message: 'Creada', newId: r.data.id, data: r.data } : { ok: false, message: r.error };
-    });
+      const replaced = item.replaces?.trashed ? ` (el simple ID ${item.replaces.id} se mandó a la papelera)` : '';
+      item.result = r.ok ? { ok: true, message: `Creada${replaced}`, newId: r.data.id, data: r.data } : { ok: false, message: r.error };
+      if (r.ok || !item.replaces?.trashed) continue;
+      // No se creó la variación: el simple vuelve a como estaba.
+      try {
+        await trash.restoreProduct(item.replaces.trashed);
+        item.result.message += ` El producto simple ID ${item.replaces.id} se restauró como estaba.`;
+      } catch (error) {
+        item.result.message += ` OJO: el producto simple ID ${item.replaces.id} quedó en la papelera sin SKU (${error.message}). Restáuralo desde WordPress y ponle de nuevo el SKU ${item.replaces.sku}.`;
+      }
+      item.replaces.trashed = null;
+    }
     vUpdates.forEach(({ item }, i) => {
       const r = vr.update[i];
       item.result = r.ok ? { ok: true, message: 'Actualizada', data: r.data } : { ok: false, message: r.error };
     });
+  }
+
+  // 3. Papelera (Estado "Eliminar"), con sus traducciones. Al final, para que un
+  //    error al guardar lo demás no deje nada a medias.
+  if (deletes.length) log(`Mandando a la papelera ${deletes.length} producto(s)/variación(es)...`);
+  for (const item of deletes) {
+    try {
+      if (item.type === TYPE.variation) {
+        const parent = plan.storeProducts.get(item.parentId);
+        item.trashed = trash.snapshotVariation(parent?.variations_data?.find((v) => v.id === item.id), parent);
+        await trash.trashVariation(item.trashed);
+        item.result = { ok: true, message: 'Enviada a la papelera' };
+      } else {
+        item.trashed = await trash.snapshotProduct(plan.storeProducts.get(item.id) || { id: item.id });
+        await trash.trashProduct(item.trashed);
+        item.result = { ok: true, message: item.type === TYPE.variable ? 'Enviado a la papelera con sus variaciones' : 'Enviado a la papelera' };
+      }
+    } catch (error) {
+      item.trashed = null;
+      fail(item, `No se pudo eliminar: ${error.message}`);
+    }
+    tick(1);
   }
 
   // Altas que ya existían: no se crean, solo se vincula su ID a la fila.
@@ -227,6 +286,7 @@ async function applyPlan(plan, { log = () => {}, onProgress = () => {} } = {}) {
   return {
     summary: {
       'Guardados correctamente': ok,
+      'Enviados a la papelera': deletes.filter((i) => i.result?.ok).length + saves.filter((i) => i.result?.ok && i.replaces).length,
       'Vinculados (ya existían)': linked.length,
       'Con error al guardar': live.length - ok,
       'Categorías/etiquetas/marcas creadas': terms.created.length,

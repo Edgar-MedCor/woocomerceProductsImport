@@ -73,7 +73,11 @@ const TYPE_LABEL = {
 };
 // Qué revisión habilita qué subida.
 const PUSH_STEP = {
-  review: { endpoint: '/sync/push', pending: (s) => (s['Productos/variaciones nuevos'] || 0) + (s['Productos/variaciones con cambios'] || 0) + (s['Ya existían en la tienda (se vinculan)'] || 0), label: (n) => `Subir ${n} producto(s) con cambios a la tienda` },
+  review: {
+    endpoint: '/sync/push',
+    pending: (s) => ['Productos/variaciones nuevos', 'Productos/variaciones con cambios', 'Simples que pasan a variación', 'A eliminar (papelera)', 'Ya existían en la tienda (se vinculan)'].reduce((n, k) => n + (s[k] || 0), 0),
+    label: (n) => `Subir ${n} producto(s) con cambios a la tienda`,
+  },
   'photos-review': { endpoint: '/sync/photos/push', pending: (s) => s['Productos/colores con fotos nuevas'] || 0, label: (n) => `Subir fotos de ${n} producto(s)/color(es)` },
 };
 const STATUS_LABEL = { running: 'En curso', success: 'Terminado', error: 'Con error' };
@@ -137,7 +141,7 @@ function switchTab(tab) {
     activeLane = tab === 'photos' ? 'photos' : 'excel';
   }
   clearInterval(pollTimer);
-  ({ sync: loadSync, photos: loadPhotos, history: loadHistory, users: loadUsers, connections: loadConnections })[tab]?.();
+  ({ sync: loadSync, photos: loadPhotos, orphans: loadOrphans, history: loadHistory, users: loadUsers, connections: loadConnections })[tab]?.();
 }
 $$('#tabs button').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 
@@ -178,7 +182,10 @@ async function startJob(path) {
 $('#reviewBtn').addEventListener('click', () => startJob('/sync/review'));
 $('#photosReviewBtn').addEventListener('click', () => startJob('/sync/photos/review'));
 $('#pushBtn').addEventListener('click', () => {
-  if (confirm(`${$('#pushBtn').textContent}. Los cambios se verán en la tienda. ¿Continuar?`)) startJob($('#pushBtn').dataset.endpoint);
+  const s = lastPlanJob?.details?.summary || {};
+  const trashed = (s['A eliminar (papelera)'] || 0) + (s['Simples que pasan a variación'] || 0);
+  const warning = trashed ? ` ${trashed} producto(s)/variación(es) se mandarán a la papelera de WordPress (se restauran con "Deshacer").` : '';
+  if (confirm(`${$('#pushBtn').textContent}. Los cambios se verán en la tienda.${warning} ¿Continuar?`)) startJob($('#pushBtn').dataset.endpoint);
 });
 $('#forcePullBtn').addEventListener('click', () => {
   if (confirm('Se reemplazará el Excel con lo que hay en la tienda. Los cambios que no se hayan subido se perderán (OneDrive guarda la versión anterior en su historial). ¿Continuar?')) startPull(true);
@@ -301,19 +308,27 @@ function renderPlan(job) {
       i.warnings.map((w) => el('li', { class: 'muted' }, w)),
     );
     const r = results.get(i.row);
+    const tag = i.replaces ? ['convert', 'Convertir'] : [i.kind, { create: 'Nuevo', link: 'Ya existe', delete: 'Eliminar' }[i.kind] || 'Cambio'];
     return el('tr', {},
       el('td', {}, String(i.row)),
       el('td', {},
-        el('span', { class: `tag ${i.kind}` }, { create: 'Nuevo', link: 'Ya existe' }[i.kind] || 'Cambio'),
+        el('span', { class: `tag ${tag[0]}` }, tag[1]),
         `${i.type || ''} · `, el('strong', {}, i.sku || '(sin SKU)'),
         el('div', { class: 'muted' }, [i.name, i.attributes].filter(Boolean).join(' · '))),
       el('td', {}, what),
-      results.size ? el('td', { class: r ? (r.ok ? '' : 'err') : 'muted' }, r ? `${r.ok ? '✔' : '✖'} ${r.message}${r.newId ? ` (ID ${r.newId})` : ''}` : '—') : null,
+      results.size ? el('td', { class: r ? (r.ok ? '' : 'err') : 'muted' }, r ? [`${r.ok ? '✔' : '✖'} ${r.message}${r.newId ? ` (ID ${r.newId})` : ''}`, productLinks(r)] : '—') : null,
     );
   });
   if (visible.length > MAX_PLAN_ROWS) rows.push(el('tr', {}, el('td', { colspan: 4, class: 'muted' }, `… y ${visible.length - MAX_PLAN_ROWS} filas más (ver la columna "Resultado último push" del Excel).`)));
   if (!visible.length) rows.push(el('tr', {}, el('td', { colspan: 4, class: 'muted' }, 'Nada que mostrar con este filtro.')));
   $('#planBody').replaceChildren(...rows);
+}
+
+// Enlaces para consultar en la tienda lo que se creó o modificó.
+const link = (href, text) => el('a', { href, target: '_blank', rel: 'noopener' }, text);
+function productLinks({ url, adminUrl }) {
+  if (!url && !adminUrl) return null;
+  return el('div', { class: 'links' }, url ? link(url, 'Ver en tienda') : null, url && adminUrl ? ' · ' : null, adminUrl ? link(adminUrl, 'Editar en WordPress') : null);
 }
 
 // ---------- tablero de fotos ----------
@@ -399,6 +414,65 @@ function renderNoPhotos() {
   $('#dashNoPhotos').replaceChildren(...rows);
 }
 
+// ---------- variantes sueltas ----------
+let orphData = null;
+let orphTimer = null;
+
+async function loadOrphans() {
+  const { report, refreshing } = await api('/sync/orphans');
+  orphData = report;
+  renderOrphans(refreshing);
+  if (!report && !refreshing) await refreshOrphans();
+  else if (refreshing) watchOrphans();
+}
+
+async function refreshOrphans() {
+  await api('/sync/orphans/refresh', { method: 'POST', body: {} });
+  renderOrphans(true);
+  watchOrphans();
+}
+
+function watchOrphans() {
+  clearInterval(orphTimer);
+  orphTimer = setInterval(async () => {
+    const { report, refreshing } = await api('/sync/orphans').catch(() => ({}));
+    if (refreshing) return;
+    clearInterval(orphTimer);
+    orphData = report;
+    renderOrphans(false);
+  }, 3000);
+}
+$('#orphRefreshBtn').addEventListener('click', refreshOrphans);
+$('#orphSearch').addEventListener('input', () => renderOrphans(false));
+
+function renderOrphans(refreshing) {
+  const d = orphData;
+  $('#orphRefreshBtn').disabled = refreshing;
+  $('#orphRefreshBtn').textContent = refreshing ? 'Actualizando… (puede tardar unos minutos)' : 'Actualizar reporte';
+  $('#orphUpdated').textContent = d?.updatedAt ? `Actualizado ${fmtDate(d.updatedAt)}` : '';
+  $('#orphError').classList.toggle('hidden', !d?.error);
+  $('#orphError').textContent = d?.error || '';
+  if (!d?.groups) return;
+
+  $('#orphStyles').textContent = d.totals.estilos;
+  $('#orphProducts').textContent = d.totals.productos;
+  $('#orphWithParent').textContent = d.totals.conPadreVariable;
+  const q = $('#orphSearch').value.trim().toLowerCase();
+  const list = d.groups.filter((g) => !q || [g.style, g.parent?.name, ...g.items.flatMap((i) => [i.sku, i.name])].join(' ').toLowerCase().includes(q));
+  const rows = list.slice(0, 300).map((g) => el('tr', {},
+    el('td', {},
+      el('strong', {}, g.style),
+      el('div', { class: g.parent ? 'muted' : 'conf' }, g.parent
+        ? [`Padre ${g.parent.type}: `, g.parent.url ? link(g.parent.url, g.parent.name) : g.parent.name, g.parent.type === 'Simple' ? ' (cámbialo a Variable)' : '']
+        : `Sin padre: agrega una fila Variable con SKU ${g.style}`)),
+    el('td', {}, el('ul', { class: 'orph-items' }, g.items.map((i) => el('li', {},
+      i.url ? link(i.url, i.sku) : i.sku, ` · talla ${i.talla} · color ${i.color} · ${i.status}`,
+      el('span', { class: 'muted' }, ` — ${i.name}`)))))));
+  if (list.length > 300) rows.push(el('tr', {}, el('td', { colspan: 2, class: 'muted' }, `… y ${list.length - 300} estilos más (usa el buscador).`)));
+  if (!list.length) rows.push(el('tr', {}, el('td', { colspan: 2, class: 'muted' }, 'Nada que mostrar.')));
+  $('#orphBody').replaceChildren(...rows);
+}
+
 // ---------- historial ----------
 async function loadHistory() {
   const { runs } = await api('/sync/runs');
@@ -422,7 +496,7 @@ async function loadHistory() {
 }
 
 async function undoRun(runId) {
-  const ok = confirm('Se regresarán a como estaban los productos que cambió este push, y se borrará lo que creó (si nadie lo modificó después). Las filas afectadas del Excel se actualizarán. ¿Continuar?');
+  const ok = confirm('Se regresarán a como estaban los productos que cambió este push, se borrará lo que creó (si nadie lo modificó después) y se sacará de la papelera lo que eliminó. Las filas afectadas del Excel se actualizarán. ¿Continuar?');
   if (!ok) return;
   try {
     const { job } = await api(`/sync/runs/${runId}/undo`, { method: 'POST', body: {} });
@@ -444,7 +518,7 @@ async function toggleChanges(runId, row, button) {
   const table = el('table', { class: 'small-table' },
     el('tr', {}, ['SKU', 'Campo', 'Antes', 'Después', 'Resultado'].map((h) => el('th', {}, h))),
     changes.map((c) => el('tr', {},
-      el('td', {}, c.sku || `ID ${c.woo_id}`),
+      el('td', {}, c.url ? link(c.url, c.sku || `ID ${c.woo_id}`) : c.sku || `ID ${c.woo_id}`),
       el('td', {}, c.field),
       el('td', { class: 'muted' }, c.old_value ?? '(vacío)'),
       el('td', {}, c.new_value ?? '(vacío)'),
@@ -459,7 +533,22 @@ async function loadUsers() {
   const data = await api('/users');
   roles = data.roles;
   $('#roleSelect').replaceChildren(...roles.map((r) => el('option', { value: r.key }, r.label)));
-  $('#rolesHelp').replaceChildren(...roles.map((r) => el('li', {}, el('strong', {}, `${r.label}: `), describePerms(r.can))));
+  $('#rolesHelp').replaceChildren(
+    ...roles.map((r) => el('li', {}, el('strong', {}, `${r.label}: `), describePerms(r.can))),
+    el('li', {}, el('strong', {}, 'Permisos extra: '), `se dan o quitan a cada usuario en la columna "Permisos extra" (${data.grantable.map((g) => g.label.toLowerCase()).join('; ')}). El administrador los tiene todos.`),
+  );
+
+  // Casillas de permisos extra: cada cambio guarda la lista completa del usuario.
+  const permsCell = (u) => {
+    if (u.role === 'admin') return el('span', { class: 'muted' }, 'Todos');
+    const boxes = data.grantable.map((g) => {
+      const box = el('input', { type: 'checkbox' });
+      box.checked = u.extraPermissions.includes(g.key);
+      return [g.key, box, el('label', { class: 'check' }, box, g.label)];
+    });
+    boxes.forEach(([, box]) => box.addEventListener('change', () => updateUser(u.id, { permissions: boxes.filter(([, b]) => b.checked).map(([key]) => key) })));
+    return el('div', { class: 'perm-list' }, boxes.map(([, , label]) => label));
+  };
 
   $('#usersBody').replaceChildren(...data.users.map((u) => {
     const roleSelect = el('select', { onchange: (e) => updateUser(u.id, { role: e.target.value }) },
@@ -472,6 +561,7 @@ async function loadUsers() {
       el('td', {}, u.displayName),
       el('td', {}, u.username),
       el('td', {}, roleSelect),
+      el('td', {}, permsCell(u)),
       el('td', {}, fmtDate(u.lastLoginAt)),
       el('td', {}, u.active ? 'Activo' : 'Desactivado'),
       el('td', {},
@@ -483,7 +573,7 @@ async function loadUsers() {
 }
 
 function describePerms(perms) {
-  const labels = { pull: 'traer de la tienda', 'pull:force': 'sobrescribir el Excel', push: 'subir a la tienda', create: 'crear productos', photos: 'subir fotos', undo: 'deshacer el último push', history: 'ver historial', users: 'administrar usuarios', connections: 'administrar conexiones' };
+  const labels = { pull: 'traer de la tienda', 'pull:force': 'sobrescribir el Excel', push: 'subir a la tienda', create: 'crear productos', photos: 'subir fotos', undo: 'deshacer el último push', history: 'ver historial', users: 'administrar usuarios', connections: 'administrar conexiones', delete: 'eliminar productos', orphans: 'reporte de variantes sueltas' };
   return perms.map((p) => labels[p] || p).join(', ');
 }
 

@@ -11,8 +11,21 @@ const { pool } = require('../db');
 const { requirePermission } = require('../auth');
 const { can, allowedFields, historyTypes } = require('../permissions');
 const dashboard = require('../../photos/dashboard');
+const orphans = require('../../report/orphans');
+const { TYPE } = require('../../push/fields');
 
 const router = express.Router();
+
+// Enlaces de un producto/variación: la página en la tienda y su edición en WordPress.
+function linksOf(item) {
+  const data = item.result?.data;
+  if (!item.result?.ok || !data) return { url: null, adminUrl: null };
+  const productId = item.type === TYPE.variation ? (data.parent_id || item.parentId) : data.id;
+  return {
+    url: data.permalink || null,
+    adminUrl: productId ? `${config.woo.url().replace(/\/$/, '')}/wp-admin/post.php?post=${productId}&action=edit` : null,
+  };
+}
 
 // Última revisión de cambios ("Revisar cambios"), lista para "Subir a la tienda".
 let pendingReview = null;
@@ -39,10 +52,20 @@ router.post('/photos/dashboard/refresh', requirePermission('photos'), (_req, res
   res.status(202).json({ ok: true, ...dashboard.getDashboard() });
 });
 
+// ---------- Reporte de variantes sueltas (permiso que asigna el administrador) ----------
+router.get('/orphans', requirePermission('orphans'), (_req, res) => {
+  res.json({ ok: true, ...orphans.getReport() });
+});
+
+router.post('/orphans/refresh', requirePermission('orphans'), (_req, res) => {
+  orphans.refreshReport();
+  res.status(202).json({ ok: true, ...orphans.getReport() });
+});
+
 router.post('/pull', requirePermission('pull'), async (req, res, next) => {
   try {
     const force = req.body?.force === true;
-    if (force && !can(req.user.role, 'pull:force')) {
+    if (force && !can(req.user, 'pull:force')) {
       return res.status(403).json({ ok: false, message: 'Tu perfil no puede sobrescribir el Excel cuando tiene cambios.' });
     }
     const job = await jobs.start('pull', req.user, ({ log, progress }) => pull({
@@ -64,7 +87,8 @@ router.post('/review', requirePermission('push'), async (req, res, next) => {
     const job = await jobs.start('review', user, async ({ log }) => {
       const reviewed = await push.review({
         allowedFields: allowedFields(user.role),
-        canCreate: can(user.role, 'create'),
+        canCreate: can(user, 'create'),
+        canDelete: can(user, 'delete'),
         log,
       });
       pendingReview = { userId: user.id, reviewed };
@@ -165,13 +189,14 @@ router.post('/photos/push', requirePermission('photos'), async (req, res, next) 
 });
 
 function resultsOf(plan) {
-  return plan.items.filter((i) => i.result).map((i) => ({ row: i.row, sku: i.data.sku ?? null, ok: i.result.ok, message: i.result.message, newId: i.result.newId || null }));
+  return plan.items.filter((i) => i.result).map((i) => ({ row: i.row, sku: i.data.sku ?? null, ok: i.result.ok, message: i.result.message, newId: i.result.newId || null, ...linksOf(i) }));
 }
 
 // Guarda campo por campo lo que se intentó subir y con qué resultado.
 async function saveChangeLog(runId, plan) {
   const values = [];
   for (const item of plan.items.filter((i) => i.result)) {
+    const { url } = linksOf(item);
     for (const change of item.changes) {
       values.push([
         runId,
@@ -182,12 +207,13 @@ async function saveChangeLog(runId, plan) {
         change.to === null || change.to === undefined ? null : String(change.to),
         item.result.ok ? 'ok' : 'error',
         item.result.ok ? null : item.result.message,
+        url,
       ]);
     }
   }
   for (const v of values) {
     await pool.query(
-      'INSERT INTO change_log (run_id, woo_id, sku, field, old_value, new_value, result, error) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      'INSERT INTO change_log (run_id, woo_id, sku, field, old_value, new_value, result, error, url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
       v,
     );
   }
@@ -278,7 +304,7 @@ router.get('/runs/:id/changes', requirePermission('history'), async (req, res, n
       if (!run[0] || !types.includes(run[0].type)) return res.status(403).json({ ok: false, message: 'No tienes acceso a esa sincronización.' });
     }
     const { rows } = await pool.query(
-      'SELECT woo_id, sku, field, old_value, new_value, result, error FROM change_log WHERE run_id = $1 ORDER BY id',
+      'SELECT woo_id, sku, field, old_value, new_value, result, error, url FROM change_log WHERE run_id = $1 ORDER BY id',
       [req.params.id],
     );
     res.json({ ok: true, changes: rows });

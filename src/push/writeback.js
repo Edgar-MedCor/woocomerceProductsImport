@@ -1,7 +1,7 @@
 // Después del push, actualiza el mismo Excel: ID de los productos creados,
 // resultado de cada fila y la hoja oculta "_base" (la nueva "foto"), para que
 // lo ya subido no vuelva a detectarse como cambio.
-const { COLUMNS, ATTRIBUTE_COLUMNS } = require('../excel/layout');
+const { COLUMNS, ATTRIBUTE_COLUMNS, DELETE_STATUS } = require('../excel/layout');
 const { cellValue } = require('../excel/reader');
 
 const RESULT_HEADER = 'Resultado último push';
@@ -55,10 +55,22 @@ async function writeBack(excel, plan, { when = new Date().toLocaleString('es-MX'
     }
   }
 
+  const headerOf = (key) => COLUMNS.find((c) => c.key === key).header;
+  const urlCol = columnIndex(ws, headerOf('url'));
+  const statusCol = columnIndex(ws, headerOf('status'));
   for (const item of plan.items) {
     if (!item.row) continue;
     const row = ws.getRow(item.row);
     if (newIdOf(item)) row.getCell(idCol).value = newIdOf(item);
+    // Enlace para consultar en la tienda lo que se creó o modificó.
+    const url = item.result?.ok && item.result.data?.permalink;
+    if (urlCol && url) {
+      const cell = row.getCell(urlCol);
+      cell.value = { text: url, hyperlink: url };
+      cell.font = { name: 'Arial', size: 10, color: { argb: 'FF1F5FBF' }, underline: true };
+    }
+    // Simple que pasó a variación: su Estado ahora es el de una variación.
+    if (item.replaces && item.result?.ok && statusCol) row.getCell(statusCol).value = item.data.status;
     const res = resultFor(item, when);
     if (!res) continue;
     const cell = row.getCell(resultCol);
@@ -79,9 +91,17 @@ async function writeBack(excel, plan, { when = new Date().toLocaleString('es-MX'
     if (baseCol[key]) baseRow.getCell(baseCol[key]).value = value ?? null;
   };
 
+  const baseRowsToRemove = [];
   for (const item of plan.items) {
     const ok = item.result?.ok;
     const newId = newIdOf(item);
+    // El simple que pasó a variación ya no está en el Excel con su ID.
+    if (ok && item.replaces && baseRowById.get(String(item.replaces.id))) baseRowsToRemove.push(baseRowById.get(String(item.replaces.id)).number);
+    // Variación que se fue a la papelera con su padre.
+    if (item.cascadeOf) {
+      if (item.cascadeOf.result?.ok && baseRowById.get(String(item.id))) setBase(baseRowById.get(String(item.id)), 'status', DELETE_STATUS);
+      continue;
+    }
     if (newId && !baseRowById.has(String(newId))) {
       // Producto nuevo: su foto es lo que se subió. Vinculado: lo que tiene la tienda,
       // para que cualquier diferencia con el Excel aparezca en la siguiente revisión.
@@ -100,6 +120,7 @@ async function writeBack(excel, plan, { when = new Date().toLocaleString('es-MX'
     }
     for (const key of keys) if (key !== 'attributes') setBase(baseRow, key, item.data[key]);
   }
+  baseRowsToRemove.sort((a, b) => b - a).forEach((n) => base.spliceRows(n, 1));
 
   return Buffer.from(await excel.workbook.xlsx.writeBuffer());
 }

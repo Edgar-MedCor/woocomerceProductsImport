@@ -93,6 +93,14 @@ main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
 .tag.create { background: var(--ok-bg); color: var(--ok); }
 .tag.update { background: #dce8f7; color: var(--primary); }
 .tag.link { background: #fff4cc; color: var(--run); }
+.tag.delete { background: var(--err-bg); color: var(--err); }
+.tag.convert { background: #e4dfec; color: #5b3a8c; }
+.links { margin-top: 4px; font-size: 13px; }
+.links a { color: var(--primary); }
+.check input { width: auto; margin: 0; }
+.perm-list { display: flex; flex-direction: column; gap: 4px; }
+.orph-items { margin: 0; padding-left: 16px; }
+.orph-items li { margin: 2px 0; }
 .err { color: var(--err); }
 .conf { color: var(--run); }
 .from { color: var(--muted); text-decoration: line-through; }

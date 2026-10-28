@@ -79,13 +79,13 @@ test('Validaciones: rebajado mayor que normal, inventario no entero, estado invÃ
   assert.equal(live(plan).length, 0, 'las filas con error no se suben');
 });
 
-test('No se puede cambiar el tipo de una fila existente', async () => {
+test('No se puede cambiar Variable a Simple (solo se permite desde Simple)', async () => {
   const catalog = baseCatalog();
   mockStore(catalog);
   const excel = await excelFrom(catalog);
-  rowBySku(excel, 'BOL48901OS015').type = TYPE.variable;
+  rowBySku(excel, 'RD45747').type = TYPE.simple;
   const plan = await buildPlan(excel);
-  assert.match(itemOf(plan, 'BOL48901OS015').errors.join(), /tipo/);
+  assert.match(itemOf(plan, 'RD45747').errors.join(), /tipo/);
 });
 
 test('Alta de producto simple: se crea; sin nombre da error', async () => {

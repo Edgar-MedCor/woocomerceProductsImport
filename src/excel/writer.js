@@ -1,5 +1,5 @@
 const ExcelJS = require('exceljs');
-const { COLUMNS, TYPE, STOCK_STATUS, PRODUCT_STATUS, VARIATION_STATUS, YES_NO } = require('./layout');
+const { COLUMNS, TYPE, STOCK_STATUS, PRODUCT_STATUS, VARIATION_STATUS, DELETE_STATUS, YES_NO } = require('./layout');
 
 const FONT = 'Arial';
 const NEW_ROWS = 2000; // filas vacías con listas desplegables para altas nuevas
@@ -66,9 +66,15 @@ function addInstructions(wb, meta) {
     ['Inventario', 'Número de piezas. Vacío = la tienda no lleva conteo (se usa "Disponibilidad").'],
     ['Medidas de prenda', 'Línea, Ancho pecho, Largo, etc. se guardan en cada producto/variante.'],
     ['No borres filas', 'Borrar una fila NO borra el producto de la tienda. Para ocultarlo cambia su Estado a "Borrador" (o "Desactivada" en variaciones).'],
+    ['Eliminar', 'Estado "Eliminar": al subir, el producto o variación se manda a la papelera de WordPress (un Variable se lleva sus variaciones). Requiere permiso; "Deshacer" lo restaura.'],
+    ['Ver en tienda', 'Enlace a la página del producto. Los productos en Borrador solo se ven con sesión de WordPress.'],
     [],
     ['Dar de alta productos nuevos', null, { color: { argb: 'FF1F3A5F' } }],
     ['Cómo', 'Agrega filas al final dejando "ID tienda" vacío. Elige el Tipo. Para un producto con variantes: primero la fila Variable y debajo sus Variación con el mismo "SKU padre".'],
+    [],
+    ['Convertir productos', null, { color: { argb: 'FF1F3A5F' } }],
+    ['Simple → Variable', 'En la fila del producto cambia el Tipo a "Variable" y agrega sus variaciones con su SKU como "SKU padre". El precio e inventario pasan a cada variación.'],
+    ['Simple → Variación', 'Para una variante que quedó suelta como producto simple: en SU fila cambia el Tipo a "Variación", escribe el "SKU padre" y la Talla/Color. Al subir se crea la variación con su SKU, precio, inventario y fotos, y el simple se manda a la papelera. Requiere el permiso de eliminar.'],
     [],
     ['Navegar', null, { color: { argb: 'FF1F3A5F' } }],
     ['Contraer / expandir', 'Botones [1] y [2] arriba a la izquierda de la hoja "Productos": [1] solo padres y simples, [2] con variaciones.'],
@@ -121,6 +127,10 @@ function addProductsSheet(wb, rows) {
         color: { argb: ok && c.editable ? 'FF000000' : 'FF8A94A6' },
       };
       if (c.format) cell.numFmt = c.format;
+      if (c.key === 'url' && r.url) {
+        cell.value = { text: r.url, hyperlink: r.url };
+        cell.font = { ...cell.font, color: { argb: 'FF1F5FBF' }, underline: true };
+      }
       cell.alignment = { vertical: 'top', wrapText: ['name', 'shortDescription', 'description'].includes(c.key) };
     });
     if (kind === 'variation') row.outlineLevel = 1;
@@ -140,7 +150,7 @@ function addProductsSheet(wb, rows) {
     return `${letter}2:${letter}${last}`;
   };
   ws.dataValidations.add(range('type'), list(Object.values(TYPE)));
-  ws.dataValidations.add(range('status'), list([...Object.values(PRODUCT_STATUS), ...Object.values(VARIATION_STATUS)]));
+  ws.dataValidations.add(range('status'), list([...Object.values(PRODUCT_STATUS), ...Object.values(VARIATION_STATUS), DELETE_STATUS]));
   ws.dataValidations.add(range('featured'), list(Object.values(YES_NO)));
   ws.dataValidations.add(range('stockStatus'), list(Object.values(STOCK_STATUS)));
 

@@ -7,7 +7,7 @@ const { ATTRIBUTE_COLUMNS, META_COLUMNS, TYPE } = require('./fields');
 
 const ATTR_FIELDS = new Set([...ATTRIBUTE_COLUMNS.map((c) => c.key), 'otherAttributes', 'attributes']);
 const SIMPLE = {
-  name: ['name'], sku: ['sku'], status: ['status'], featured: ['featured'],
+  type: ['type'], name: ['name'], sku: ['sku'], status: ['status'], featured: ['featured'],
   categories: ['categories'], tags: ['tags'], brand: ['brands'],
   shortDescription: ['short_description'], description: ['description'],
   regularPrice: ['regular_price'], salePrice: ['sale_price'],
@@ -139,16 +139,28 @@ async function saveBackup(pool, runId, plan, snapshot) {
   const saved = liveItems(plan).filter((i) => i.result?.ok);
   // "Después" consultado igual que el "antes" (la respuesta del lote trae la descripción ya formateada).
   // Las altas también: crear variaciones cambia la fecha de modificación de su padre.
-  const after = saved.length ? await fetchCurrent(saved, plan).catch(() => new Map()) : new Map();
+  const stillThere = saved.filter((i) => i.kind !== 'delete');
+  const after = stillThere.length ? await fetchCurrent(stillThere, plan).catch(() => new Map()) : new Map();
+  // Lo que se mandó a la papelera: cómo estaba cada versión (idioma), para restaurarla.
+  const saveTrashed = (kind, wooId, parentId, sku, versions) => pool.query(
+    `INSERT INTO push_backups (run_id, kind, action, woo_id, parent_id, sku, before)
+     VALUES ($1,$2,'delete',$3,$4,$5,$6)`,
+    [runId, kind, wooId, parentId, sku ?? null, JSON.stringify({ versions })],
+  );
   for (const item of saved) {
     const kind = item.type === TYPE.variation ? 'variation' : 'product';
     const parentId = kind === 'variation' ? parentIdOf(item, plan) : null;
-    if (item.kind === 'create') {
+    if (item.kind === 'delete') {
+      if (item.trashed) await saveTrashed(kind, item.id, parentId, item.data.sku, item.trashed);
+    } else if (item.kind === 'create') {
       await pool.query(
         `INSERT INTO push_backups (run_id, kind, action, woo_id, parent_id, sku, after)
          VALUES ($1,$2,'create',$3,$4,$5,$6)`,
         [runId, kind, item.result.newId, parentId, item.data.sku ?? null, JSON.stringify({ date_modified: after.get(keyOf(item))?.date_modified || item.result.data?.date_modified || null })],
       );
+      // Simple que pasó a ser esta variación: se respalda después de la variación,
+      // así "Deshacer" primero borra la variación (libera el SKU) y luego lo restaura.
+      if (item.replaces?.trashed) await saveTrashed('product', item.replaces.id, null, item.replaces.sku, item.replaces.trashed);
     } else if (snapshot.has(item)) {
       const { fields, before } = snapshot.get(item);
       await pool.query(

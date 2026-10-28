@@ -16,7 +16,7 @@ const LOCKED_MAX_WAITS = 8; // ~2 minutos
  * Paso 1: descarga el Excel y arma el plan (no modifica nada).
  * Devuelve { plan, excel, source } para pasárselo a applyReview.
  */
-async function review({ local = null, allowedFields = null, canCreate = true, log = console.log } = {}) {
+async function review({ local = null, allowedFields = null, canCreate = true, canDelete = false, log = console.log } = {}) {
   let buffer;
   let source;
   if (local) {
@@ -32,7 +32,7 @@ async function review({ local = null, allowedFields = null, canCreate = true, lo
   }
   const excel = await readWorkbook(buffer);
   log(`Comparando ${excel.rows.length} filas contra el último "Traer de la tienda"...`);
-  const plan = await buildPlan(excel, { allowedFields, canCreate, log });
+  const plan = await buildPlan(excel, { allowedFields, canCreate, canDelete, log });
   return { plan, excel, source, reviewedAt: new Date() };
 }
 

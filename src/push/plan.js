@@ -1,11 +1,11 @@
 // Construye el "plan" del push: qué filas del Excel cambiaron respecto a la
 // foto del último pull, qué productos nuevos hay, qué errores tienen y qué
 // cambios chocan con ediciones hechas directo en la tienda.
-const { catalogToRows } = require('../excel/layout');
+const { catalogToRows, VARIATION_STATUS } = require('../excel/layout');
 const store = require('../woo/store');
 const {
-  COL, ATTRIBUTE_COLUMNS, ATTR_KEYS, TYPE, ANY, EDITABLE_ON_UPDATE,
-  isBlank, splitList, splitCategories, canonical, same, applies, normalizeType, validateRow,
+  COL, ATTRIBUTE_COLUMNS, ATTR_KEYS, TYPE, ANY, DELETE_STATUS, EDITABLE_ON_UPDATE, VARIATION_STATUS_SLUG,
+  isBlank, isDelete, splitList, splitCategories, canonical, same, applies, normalizeType, validateRow,
 } = require('./fields');
 
 const norm = (s) => String(s || '').trim().toLowerCase();
@@ -79,12 +79,45 @@ const attrSummary = (list) => (list || []).map((a) => `${a.name}: ${a.options.jo
 
 /**
  * @param {object} excel   resultado de readWorkbook
- * @param {object} options { allowedFields: Set|null (null = todos), canCreate, log, onProgress }
+ * @param {object} options { allowedFields: Set|null (null = todos), canCreate, canDelete, log, onProgress }
  */
-async function buildPlan(excel, { allowedFields = null, canCreate = true, log = () => {} } = {}) {
+async function buildPlan(excel, { allowedFields = null, canCreate = true, canDelete = false, log = () => {} } = {}) {
   const baseById = new Map(excel.baseRows.map((b) => [String(b.id), b]));
   const items = [];
   const notes = [];
+  let ignoredDeletes = 0;
+
+  // Estado "Eliminar": el producto/variación se manda a la papelera; los demás cambios de la fila se ignoran.
+  const markDelete = (item, base) => {
+    item.type = base.type;
+    item.kind = 'delete';
+    item.changes.push({ key: 'status', header: COL.status.header, from: base.status ?? null, to: DELETE_STATUS });
+    if (!canDelete) item.errors.push('Tu perfil no tiene permiso para eliminar. Pídeselo al administrador.');
+    item.warnings.push(base.type === TYPE.variable
+      ? 'Se manda a la papelera de WordPress junto con todas sus variaciones.'
+      : 'Se manda a la papelera de WordPress.');
+  };
+
+  // Simple -> Variación (variante que quedó suelta): se crea la variación con los
+  // datos de la fila y el simple se manda a la papelera para liberar su SKU.
+  const markConversion = (item, row, base) => {
+    item.type = TYPE.variation;
+    item.kind = 'create';
+    item.id = null;
+    item.base = null;
+    item.replaces = { id: Number(base.id), sku: base.sku ?? null, name: base.name ?? null };
+    const status = norm(row.status);
+    item.data = { ...row, status: VARIATION_STATUS_SLUG[status] ? row.status : (!status || status === 'publicado' ? VARIATION_STATUS.publish : VARIATION_STATUS.private) };
+    if (!canCreate) item.errors.push('Tu perfil no puede crear productos.');
+    if (!canDelete) item.errors.push('Para convertir un simple en variación se necesita el permiso de eliminar (el simple se manda a la papelera). Pídeselo al administrador.');
+    // La descripción larga del simple no pasa: la variación muestra la del padre.
+    for (const key of EDITABLE_ON_UPDATE) {
+      if (key !== 'description' && applies(key, TYPE.variation) && !isBlank(item.data[key])) {
+        item.changes.push({ key, header: COL[key].header, from: null, to: item.data[key] });
+      }
+    }
+    item.warnings.push(`Reemplaza al producto simple ID ${base.id}${base.name ? ` ("${base.name}")` : ''}: se crea esta variación con su SKU, precio, inventario y fotos, y el simple se manda a la papelera. Nombre, categorías y descripciones los toma del padre.`);
+  };
 
   // Un ID repetido casi siempre es una fila copiada para crear otra: si se
   // aceptara, la copia sobrescribiría al producto original.
@@ -95,6 +128,11 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, log = 
   for (const row of excel.rows) {
     const id = isBlank(row.id) ? null : String(row.id).trim();
     const base = id ? baseById.get(id) : null;
+    // Fila nueva marcada "Eliminar": no existe en la tienda, no hay nada que borrar.
+    if (!id && isDelete(row.status)) {
+      ignoredDeletes += 1;
+      continue;
+    }
     const item = {
       row: row._row, id: id ? Number(id) : null, data: row, base,
       type: null, kind: id ? 'update' : 'create', changes: [], conflicts: [], skipped: [], errors: [], warnings: [], synced: [],
@@ -114,10 +152,22 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, log = 
       continue;
     }
 
-    if (base) {
-      item.type = base.type;
-      const typed = normalizeType(row.type);
-      if (typed && typed !== base.type) item.errors.push(`No se puede cambiar el tipo de "${base.type}" a "${typed}".`);
+    const typed = normalizeType(row.type);
+    if (base && isDelete(row.status)) {
+      if (isDelete(base.status)) continue; // ya se eliminó en un push anterior
+      markDelete(item, base);
+    } else if (base && base.type === TYPE.simple && typed === TYPE.variation) {
+      markConversion(item, row, base);
+    } else if (base) {
+      item.type = base.type === TYPE.simple && typed === TYPE.variable ? TYPE.variable : base.type;
+      if (typed && typed !== item.type) {
+        item.errors.push(`No se puede cambiar el tipo de "${base.type}" a "${typed}". Solo se permite Simple → Variable o Simple → Variación.`);
+      }
+      if (item.type !== base.type) {
+        item.typeChange = true;
+        item.changes.push({ key: 'type', header: COL.type.header, from: base.type, to: item.type });
+        item.warnings.push('Pasa a producto Variable: el precio y el inventario van en cada variación (agrégalas con este SKU como "SKU padre").');
+      }
       if (base.type === TYPE.variation && !same('parentSku', row.parentSku, base.parentSku)) {
         item.errors.push('No se puede mover una variación a otro padre. Crea una variación nueva en el otro producto.');
       }
@@ -138,18 +188,25 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, log = 
       }
     }
 
-    if (item.type) item.errors.push(...validateRow(row, item.type));
+    if (item.type && item.kind !== 'delete') item.errors.push(...validateRow(item.data, item.type));
     items.push(item);
   }
 
   // --- 2. Relación padre/variación ---
-  const allRows = excel.rows.map((row) => ({ row, type: row.id ? baseById.get(String(row.id))?.type : normalizeType(row.type) }));
+  // Tipo de cada fila: el de la tienda, salvo los cambios permitidos desde Simple.
+  const typeOfRow = (row) => {
+    const base = isBlank(row.id) ? null : baseById.get(String(row.id).trim());
+    const typed = normalizeType(row.type);
+    if (base?.type === TYPE.simple && (typed === TYPE.variable || typed === TYPE.variation)) return typed;
+    return base ? base.type : typed;
+  };
+  const allRows = excel.rows.map((row) => ({ row, type: typeOfRow(row) }));
   const parentsBySku = new Map();
   for (const { row, type } of allRows) {
     if (type === TYPE.variable && skuKey(row.sku)) parentsBySku.set(skuKey(row.sku), row);
   }
   const variationsOf = (parentRow) => allRows
-    .filter(({ row, type }) => type === TYPE.variation && skuKey(row.parentSku) && skuKey(row.parentSku) === skuKey(parentRow.sku))
+    .filter(({ row, type }) => type === TYPE.variation && !isDelete(row.status) && skuKey(row.parentSku) && skuKey(row.parentSku) === skuKey(parentRow.sku))
     .map(({ row }) => row);
 
   for (const item of items.filter((i) => i.type === TYPE.variation)) {
@@ -166,6 +223,18 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, log = 
     item.parentId = isBlank(parentRow.id) ? null : Number(parentRow.id);
     if (item.kind === 'create' && !ATTRIBUTE_COLUMNS.some((c) => !isBlank(item.data[c.key])) && isBlank(item.data.otherAttributes)) {
       item.errors.push('La variación nueva necesita al menos un valor de atributo (ej. Talla o Color).');
+    }
+  }
+
+  // Variaciones de un producto que se elimina: se van a la papelera con él.
+  const deletedParents = new Set(items.filter((i) => i.kind === 'delete' && i.type === TYPE.variable && !i.errors.length).map((i) => i.row));
+  for (const item of items.filter((i) => i.type === TYPE.variation && deletedParents.has(i.parentRow))) {
+    if (item.kind === 'delete') {
+      item.changes = [];
+      item.cascadeOf = items.find((i) => i.row === item.parentRow); // el padre que se elimina
+      item.warnings.push('Se elimina junto con su producto padre.');
+    } else {
+      item.errors.push('Su producto padre se va a eliminar; no se puede crear ni modificar esta variación.');
     }
   }
 
@@ -192,13 +261,14 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, log = 
   const variationIdsByParent = new Map();
   for (const item of items) {
     if (item.errors.length) continue;
+    const existing = item.kind === 'update' || item.kind === 'delete';
     if (item.type === TYPE.variation && item.parentId) {
       productIds.add(item.parentId);
-      if (item.kind === 'update') {
+      if (existing) {
         if (!variationIdsByParent.has(item.parentId)) variationIdsByParent.set(item.parentId, []);
         variationIdsByParent.get(item.parentId).push(item.id);
       }
-    } else if (item.kind === 'update') {
+    } else if (existing) {
       productIds.add(item.id);
     }
   }
@@ -209,10 +279,12 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, log = 
   }
   const storeRows = new Map(catalogToRows({ products: [...storeProducts.values()], categories: taxonomies.categories }).map((r) => [r.id, r]));
 
-  for (const item of items.filter((i) => i.kind === 'update' && !i.errors.length)) {
+  for (const item of items.filter((i) => (i.kind === 'update' || i.kind === 'delete') && !i.errors.length)) {
     const current = storeRows.get(item.id);
     if (!current) {
-      item.errors.push('Este producto ya no existe en la tienda (¿lo borraron desde WordPress?).');
+      item.errors.push(isDelete(item.base?.status)
+        ? 'Se eliminó en un push anterior (está en la papelera). Restáuralo con "Deshacer" o desde WordPress.'
+        : 'Este producto ya no existe en la tienda (¿lo borraron desde WordPress?).');
       continue;
     }
     const pending = [];
@@ -278,10 +350,36 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, log = 
     }
   }
 
+  // Simples que pasan a ser variación: deben seguir en la tienda y seguir siendo simples.
+  const conversions = items.filter((i) => i.replaces && i.kind === 'create' && !i.errors.length);
+  if (conversions.length) {
+    const found = new Map((await store.fetchProductsByIds(conversions.map((i) => i.replaces.id))).map((p) => [p.id, p]));
+    for (const item of conversions) {
+      const product = found.get(item.replaces.id);
+      if (!product) item.errors.push(`El producto simple ID ${item.replaces.id} ya no existe en la tienda.`);
+      else if (product.type !== 'simple') item.errors.push(`El producto ID ${item.replaces.id} ya no es simple en la tienda. Haz "Traer de la tienda".`);
+      else item.replaces.product = product;
+    }
+  }
+  // Variaciones nuevas con un SKU que ya usa un producto (la variante suelta como simple).
+  const newVariations = variationCreates.filter((i) => i.kind === 'create' && !i.errors.length);
+  if (newVariations.length) {
+    const owners = (await store.fetchProductsBySkus(newVariations.map((i) => String(i.data.sku).trim())))
+      .filter((p) => p.status !== 'trash'); // en la papelera ya no reserva el SKU
+    const ownerBySku = new Map(owners.map((p) => [skuKey(p.sku), p]));
+    for (const item of newVariations) {
+      const owner = ownerBySku.get(skuKey(item.data.sku));
+      if (!owner || owner.id === item.replaces?.id) continue;
+      item.errors.push(owner.type === 'simple'
+        ? `El SKU "${item.data.sku}" ya es del producto simple ID ${owner.id} ("${owner.name}"). Para convertirlo en variación, en la fila de ESE producto cambia el Tipo a "Variación" y escribe el SKU padre (y borra esta fila).`
+        : `El SKU "${item.data.sku}" ya lo usa otro producto de la tienda (ID ${owner.id}).`);
+    }
+  }
+
   // --- 6. Atributos de productos variables (opciones nuevas, valores cambiados) ---
   const parentsToSync = new Map(); // fila del padre -> item
   for (const item of items.filter((i) => !i.errors.length)) {
-    const touchesAttrs = item.kind === 'create' || item.changes.some((c) => ATTR_KEYS.has(c.key) || c.key === 'otherAttributes');
+    const touchesAttrs = item.kind === 'create' || item.typeChange || item.changes.some((c) => ATTR_KEYS.has(c.key) || c.key === 'otherAttributes');
     if (!touchesAttrs) continue;
     if (item.type === TYPE.variable) parentsToSync.set(item.row, item);
     if (item.type === TYPE.variation && item.parentRow) {
@@ -331,17 +429,22 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, log = 
     }
   }
 
-  // Variación nueva cuyo padre (nuevo) no se puede subir: tampoco se sube.
-  for (const item of items.filter((i) => i.type === TYPE.variation && i.kind === 'create' && !i.errors.length && !i.parentId)) {
+  // Variación nueva cuyo padre (nuevo, o simple que pasa a Variable) no se puede subir: tampoco se sube.
+  for (const item of items.filter((i) => i.type === TYPE.variation && i.kind === 'create' && !i.errors.length)) {
     const parentItem = items.find((i) => i.row === item.parentRow);
-    if (parentItem?.errors.length) item.errors.push('No se puede crear porque su producto padre tiene errores (ver la fila del padre).');
+    if (parentItem?.errors.length && (!item.parentId || parentItem.typeChange)) {
+      item.errors.push('No se puede crear porque su producto padre tiene errores (ver la fila del padre).');
+    }
   }
+  if (ignoredDeletes) notes.push(`${ignoredDeletes} fila(s) sin "ID tienda" con Estado "Eliminar" se ignoraron: no existen en la tienda.`);
 
   // --- 8. Resumen ---
   const live = items.filter((i) => !i.errors.length && i.changes.length);
   const summary = {
-    'Productos/variaciones nuevos': live.filter((i) => i.kind === 'create').length,
-    'Productos/variaciones con cambios': live.filter((i) => i.kind !== 'create').length,
+    'Productos/variaciones nuevos': live.filter((i) => i.kind === 'create' && !i.replaces).length,
+    'Productos/variaciones con cambios': live.filter((i) => i.kind === 'update').length,
+    'Simples que pasan a variación': live.filter((i) => i.replaces).length,
+    'A eliminar (papelera)': live.filter((i) => i.kind === 'delete').length,
     'Ya existían en la tienda (se vinculan)': items.filter((i) => i.kind === 'link' && !i.errors.length).length,
     'Campos a cambiar': live.filter((i) => i.kind === 'update').reduce((n, i) => n + i.changes.length, 0),
     'Filas con errores (no se suben)': items.filter((i) => i.errors.length).length,
@@ -376,6 +479,7 @@ function publicPlan(plan) {
         kind: i.kind,
         type: i.type,
         id: i.id,
+        replaces: i.replaces ? { id: i.replaces.id, sku: i.replaces.sku, name: i.replaces.name } : null,
         sku: i.data.sku ?? null,
         name: i.data.name ?? null,
         attributes: ATTRIBUTE_COLUMNS.map((c) => i.data[c.key]).filter((v) => !isBlank(v)).join(' · ') || null,

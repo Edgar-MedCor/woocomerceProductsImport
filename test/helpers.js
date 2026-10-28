@@ -63,10 +63,14 @@ function baseCatalog() {
 function mockStore(products, { trash = [] } = {}) {
   const live = clone(products);
   const strip = (p) => { const { variations_data: _v, ...rest } = p; return clone(rest); };
+  // Como en Woo: status "any" no incluye la papelera.
+  const notTrashed = (x) => x.status !== 'trash';
+  const variationsOf = (parentId) => (live.find((p) => p.id === parentId)?.variations_data || []).filter(notTrashed);
   store.fetchTaxonomies = async () => ({ categories: clone(CATEGORIES), tags: [{ id: 1, name: 'LINO' }], attributes: clone(GLOBAL_ATTRS), brands: [] });
-  store.fetchProductsByIds = async (ids) => live.filter((p) => ids.includes(p.id)).map(strip);
-  store.fetchVariationsByIds = async (parentId, ids) => clone((live.find((p) => p.id === parentId)?.variations_data || []).filter((v) => ids.includes(v.id)));
-  store.fetchAllVariations = async (parentId) => clone(live.find((p) => p.id === parentId)?.variations_data || []);
+  store.fetchProductsByIds = async (ids) => live.filter((p) => ids.includes(p.id) && notTrashed(p)).map(strip);
+  store.fetchProductsAllLanguages = async (ids) => live.filter((p) => ids.includes(p.id)).map(strip);
+  store.fetchVariationsByIds = async (parentId, ids) => clone(variationsOf(parentId).filter((v) => ids.includes(v.id)));
+  store.fetchAllVariations = async (parentId) => clone(variationsOf(parentId));
   store.fetchProductsBySkus = async (skus) => [...live, ...trash.map((p) => ({ ...p, status: 'trash' }))]
     .filter((p) => skus.map((s) => s.toUpperCase()).includes(String(p.sku).toUpperCase())).map(strip);
 
@@ -83,8 +87,21 @@ function mockStore(products, { trash = [] } = {}) {
     }
     obj.date_modified = new Date().toISOString();
   };
-  store.batch = async (endpoint, { update = [] }) => ({
-    create: [],
+  // Como en Woo: un SKU no se puede repetir, salvo con algo que está en la papelera.
+  const skuInUse = (sku) => sku && live.some((p) => (notTrashed(p) && p.sku === sku) || (p.variations_data || []).some((v) => notTrashed(v) && v.sku === sku));
+  let nextId = 5000;
+  store.batch = async (endpoint, { create = [], update = [] }) => ({
+    create: create.map((payload) => {
+      if (skuInUse(payload.sku)) return { ok: false, error: `SKU duplicado: ${payload.sku}` };
+      const obj = { ...clone(payload), id: nextId++, permalink: `https://tienda.test/?p=${nextId}`, date_modified: new Date().toISOString() };
+      const m = endpoint.match(/^products\/(\d+)\/variations/);
+      if (m) {
+        const parent = live.find((p) => p.id === Number(m[1]));
+        (parent.variations_data ||= []).push(obj);
+      }
+      else live.push({ ...obj, variations_data: [] });
+      return { ok: true, data: clone(obj) };
+    }),
     update: update.map((payload) => {
       const obj = find(endpoint, payload.id);
       if (!obj) return { ok: false, error: 'No existe' };
@@ -92,15 +109,24 @@ function mockStore(products, { trash = [] } = {}) {
       return { ok: true, data: clone(obj) };
     }),
   });
-  store.request = async (method, endpoint) => {
-    if (method !== 'delete') throw new Error(`request ${method} no simulado`);
+  store.request = async (method, endpoint, data = {}) => {
     const v = endpoint.match(/^products\/(\d+)\/variations\/(\d+)$/);
-    if (v) {
-      const parent = live.find((p) => p.id === Number(v[1]));
-      parent.variations_data = parent.variations_data.filter((x) => x.id !== Number(v[2]));
+    const obj = v ? find(endpoint, Number(v[2])) : live.find((p) => p.id === Number(endpoint.split('/')[1]));
+    if (!obj) throw Object.assign(new Error('No existe'), { response: { status: 404 } });
+    if (method === 'put') {
+      applyPayload(obj, data);
+      return { data: clone(obj) };
+    }
+    if (method !== 'delete') throw new Error(`request ${method} no simulado`);
+    if (data.force) {
+      if (v) {
+        const parent = live.find((p) => p.id === Number(v[1]));
+        parent.variations_data = parent.variations_data.filter((x) => x.id !== Number(v[2]));
+      } else live.splice(live.indexOf(obj), 1);
     } else {
-      const id = Number(endpoint.split('/')[1]);
-      live.splice(live.findIndex((p) => p.id === id), 1);
+      // Papelera: un variable se lleva sus variaciones.
+      obj.status = 'trash';
+      for (const x of obj.variations_data || []) x.status = 'trash';
     }
     return { data: {} };
   };

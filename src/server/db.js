@@ -76,6 +76,10 @@ async function migrate() {
     CREATE INDEX IF NOT EXISTS idx_push_backups_run ON push_backups(run_id);
     ALTER TABLE sync_runs ADD COLUMN IF NOT EXISTS undone_at TIMESTAMPTZ;
     ALTER TABLE sync_runs ADD COLUMN IF NOT EXISTS undone_by_run BIGINT;
+    -- Permisos que el administrador asigna a cada usuario además de su perfil.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_permissions TEXT[] NOT NULL DEFAULT '{}';
+    -- Enlace al producto en la tienda, para consultarlo desde el historial.
+    ALTER TABLE change_log ADD COLUMN IF NOT EXISTS url TEXT;
 
     CREATE INDEX IF NOT EXISTS idx_sync_runs_started ON sync_runs(started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_change_log_run ON change_log(run_id);
