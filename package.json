@@ -12,6 +12,7 @@
     "dev": "node --watch src/server/index.js",
     "test": "node --test --test-reporter=spec \"test/*.test.js\"",
     "create-user": "node scripts/create-user.js",
+    "reset-password": "node scripts/reset-password.js",
     "login": "node src/cli.js login",
     "pull": "node src/cli.js pull",
     "push": "node src/cli.js push"

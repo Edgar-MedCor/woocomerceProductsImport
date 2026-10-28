@@ -2,21 +2,9 @@
 // Uso: npm run create-user -- <usuario> "<Nombre visible>" <admin|excel|fotos>
 // La contraseña se pide por teclado para que no quede en el historial de la terminal.
 require('../src/config');
-const readline = require('readline');
 const { pool, migrate } = require('../src/server/db');
 const { createUser } = require('../src/server/auth');
-
-function askHidden(question) {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl._writeToOutput = (s) => { if (s.includes(question)) rl.output.write(s); };
-    rl.question(question, (answer) => {
-      rl.close();
-      process.stdout.write('\n');
-      resolve(answer);
-    });
-  });
-}
+const { askHidden } = require('./prompt');
 
 async function main() {
   const [username, displayName, role] = process.argv.slice(2);

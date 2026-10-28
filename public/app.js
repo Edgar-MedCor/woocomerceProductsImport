@@ -35,6 +35,24 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// Ojito para mostrar u ocultar lo escrito en los campos de contraseña.
+$$('input[type="password"]').forEach((input) => {
+  const wrap = el('span', { class: 'pass-wrap' });
+  input.replaceWith(wrap);
+  const eye = el('button', { type: 'button', class: 'eye', title: 'Mostrar contraseña', 'aria-label': 'Mostrar contraseña' }, '👁');
+  eye.addEventListener('click', () => {
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    eye.textContent = show ? '🙈' : '👁';
+    eye.title = show ? 'Ocultar contraseña' : 'Mostrar contraseña';
+    eye.setAttribute('aria-label', eye.title);
+    input.focus();
+  });
+  wrap.append(input, eye);
+  // Al enviar el formulario vuelve a ocultarse.
+  input.form?.addEventListener('submit', () => { input.type = 'password'; eye.textContent = '👁'; });
+});
+
 const fmtDate = (d) => (d ? new Date(d).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 const can = (perm) => me?.permissions.includes(perm);
 const TYPE_LABEL = {
