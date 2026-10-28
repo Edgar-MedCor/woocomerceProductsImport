@@ -35,22 +35,30 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
-// Ojito para mostrar u ocultar lo escrito en los campos de contraseña.
+// Botón para mostrar u ocultar lo escrito en los campos de contraseña.
+const EYE_SVG = {
+  show: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
+  hide: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>',
+};
 $$('input[type="password"]').forEach((input) => {
   const wrap = el('span', { class: 'pass-wrap' });
   input.replaceWith(wrap);
-  const eye = el('button', { type: 'button', class: 'eye', title: 'Mostrar contraseña', 'aria-label': 'Mostrar contraseña' }, '👁');
-  eye.addEventListener('click', () => {
-    const show = input.type === 'password';
-    input.type = show ? 'text' : 'password';
-    eye.textContent = show ? '🙈' : '👁';
-    eye.title = show ? 'Ocultar contraseña' : 'Mostrar contraseña';
+  const eye = el('button', { type: 'button', class: 'pass-toggle' });
+  const render = (visible) => {
+    eye.innerHTML = visible ? EYE_SVG.hide : EYE_SVG.show;
+    eye.title = visible ? 'Ocultar contraseña' : 'Mostrar contraseña';
     eye.setAttribute('aria-label', eye.title);
+  };
+  render(false);
+  eye.addEventListener('click', () => {
+    const visible = input.type === 'password';
+    input.type = visible ? 'text' : 'password';
+    render(visible);
     input.focus();
   });
   wrap.append(input, eye);
   // Al enviar el formulario vuelve a ocultarse.
-  input.form?.addEventListener('submit', () => { input.type = 'password'; eye.textContent = '👁'; });
+  input.form?.addEventListener('submit', () => { input.type = 'password'; render(false); });
 });
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
