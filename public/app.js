@@ -281,6 +281,8 @@ const TYPE_LABEL = {
   photos: 'Subir fotos',
   undo: 'Deshacer push',
   'photos-link': 'Relacionar carpeta',
+  'attrs-review': 'Revisar atributos',
+  'attrs-fix': 'Corregir atributos',
 };
 // Qué revisión habilita qué subida.
 const PUSH_STEP = {
@@ -289,7 +291,8 @@ const PUSH_STEP = {
     pending: (s) => ['Productos/variaciones nuevos', 'Productos/variaciones con cambios', 'Simples que pasan a variación', 'A eliminar (papelera)', 'Ya existían en la tienda (se vinculan)'].reduce((n, k) => n + (s[k] || 0), 0),
     label: (n) => `Subir ${n} producto(s) con cambios a la tienda`,
   },
-  'photos-review': { endpoint: '/sync/photos/push', pending: (s) => s['Productos/colores con fotos nuevas'] || 0, label: (n) => `Subir fotos de ${n} producto(s)/color(es)` },
+  'photos-review': { endpoint: '/sync/photos/push', pending: (s) => (s['Productos/colores con fotos nuevas'] || 0) + (s['Productos padre sin foto (se arma su galería)'] || 0), label: (n) => `Subir fotos de ${n} producto(s)/color(es)` },
+  'attrs-review': { endpoint: '/sync/attributes/fix', pending: (s) => s['Productos a corregir'] || 0, label: (n) => `Corregir atributos de ${n} producto(s)` },
 };
 const STATUS_LABEL = { running: 'En curso', success: 'Terminado', error: 'Con error' };
 
@@ -403,8 +406,27 @@ const startJob = (path, button = null) => launch(button, () => api(path, { metho
 $('#pullBtn').addEventListener('click', (e) => startPull(false, e.currentTarget));
 $('#reviewBtn').addEventListener('click', (e) => startJob('/sync/review', e.currentTarget));
 $('#photosReviewBtn').addEventListener('click', (e) => startJob('/sync/photos/review', e.currentTarget));
+$('#attrsReviewBtn').addEventListener('click', (e) => startJob('/sync/attributes/review', e.currentTarget));
 $('#pushBtn').addEventListener('click', async () => {
   const s = lastPlanJob?.details?.summary || {};
+  if (lastPlanJob?.type === 'attrs-review') {
+    const ok = await confirmModal({
+      title: 'Corregir atributos en la tienda',
+      tone: 'warning',
+      okText: 'Corregir atributos',
+      body: el('div', {},
+        el('p', {}, 'Solo se cambia la configuración de los atributos; precios, inventario y lo demás no se tocan.'),
+        facts([
+          ['Productos', s['Productos a corregir']],
+          ['Se prenden para variaciones', s['Atributos que se prenden para variaciones'] || null],
+          ['Se apagan para variaciones', s['Atributos que se apagan para variaciones'] || null],
+          ['Pasan de local a global', s['Atributos locales que pasan a globales'] || null],
+        ]),
+        el('p', { class: 'callout warning' }, 'Este cambio no se puede deshacer desde el panel. Lo anterior queda guardado en el Historial de cada producto.')),
+    });
+    if (ok) startJob('/sync/attributes/fix', $('#pushBtn'));
+    return;
+  }
   const isPhotos = lastPlanJob?.type === 'photos-review';
   const trashed = (s['A eliminar (papelera)'] || 0) + (s['Simples que pasan a variación'] || 0);
   const ok = await confirmModal({
@@ -414,7 +436,7 @@ $('#pushBtn').addEventListener('click', async () => {
     body: el('div', {},
       el('p', {}, 'Los cambios se verán en la tienda en cuanto termine.'),
       facts(isPhotos
-        ? [['Productos/colores', s['Productos/colores con fotos nuevas']], ['Fotos', s['Fotos a subir']]]
+        ? [['Productos/colores', s['Productos/colores con fotos nuevas']], ['Fotos', s['Fotos a subir']], ['Padres sin foto (se arma su galería)', s['Productos padre sin foto (se arma su galería)'] || null]]
         : [
           ['Nuevos', s['Productos/variaciones nuevos'] || null],
           ['Con cambios', s['Productos/variaciones con cambios'] || null],
@@ -452,6 +474,8 @@ function notifyJobEnd(job) {
     push: 'Los cambios ya están en la tienda. Revisa el resultado de cada fila.',
     photos: 'Las fotos ya están en la tienda y las carpetas se movieron a "Subidas".',
     undo: 'La tienda quedó como antes de ese push.',
+    'attrs-review': pending ? 'Revisa la lista y confirma para corregir los atributos.' : 'Todos los productos variables ya cumplen la regla.',
+    'attrs-fix': 'Los atributos ya están corregidos. Haz "Traer de la tienda" para poner el Excel al día.',
   }[job.type] || '';
   toast(`${label}: terminado. ${next}`.trim(), 'success');
 }
@@ -491,6 +515,7 @@ function renderJob(job) {
   else {
     $('#pullBtn').disabled = running;
     $('#reviewBtn').disabled = running;
+    $('#attrsReviewBtn').disabled = running;
   }
   renderPlan(job);
   if (!job) return;
@@ -550,7 +575,7 @@ function renderPlan(job) {
     $('#pushBtn').textContent = step.label(pending);
     $('#pushBtn').dataset.endpoint = step.endpoint;
   }
-  $('#rowHead').textContent = job.type.startsWith('photos') ? 'Carpeta' : 'Fila';
+  $('#rowHead').textContent = job.type.startsWith('photos') ? 'Carpeta' : job.type.startsWith('attrs') ? 'ID' : 'Fila';
   $('#jobExcelLink').classList.toggle('hidden', !job.webUrl);
   if (job.webUrl) $('#jobExcelLink').href = job.webUrl;
 
@@ -1018,7 +1043,7 @@ async function loadUsers({ quiet = false } = {}) {
 }
 
 function describePerms(perms) {
-  const labels = { pull: 'traer de la tienda', 'pull:force': 'sobrescribir el Excel', push: 'subir a la tienda', create: 'crear productos', photos: 'subir fotos', undo: 'deshacer el último push', history: 'ver historial', users: 'administrar usuarios', connections: 'administrar conexiones', delete: 'eliminar productos', orphans: 'reporte de variantes sueltas' };
+  const labels = { pull: 'traer de la tienda', 'pull:force': 'sobrescribir el Excel', push: 'subir a la tienda', create: 'crear productos', photos: 'subir fotos', undo: 'deshacer el último push', history: 'ver historial', users: 'administrar usuarios', connections: 'administrar conexiones', delete: 'eliminar productos', orphans: 'reporte de variantes sueltas', attributes: 'corregir atributos' };
   return perms.map((p) => labels[p] || p).join(', ');
 }
 

@@ -14,7 +14,7 @@ const GRANTABLE = {
 const ROLES = {
   admin: {
     label: 'Administrador',
-    can: ['pull', 'pull:force', 'push', 'create', 'undo', 'photos', 'history', 'users', 'connections', ...Object.keys(GRANTABLE)],
+    can: ['pull', 'pull:force', 'push', 'create', 'undo', 'photos', 'history', 'users', 'connections', 'attributes', ...Object.keys(GRANTABLE)],
     fields: null,
     history: null,
   },

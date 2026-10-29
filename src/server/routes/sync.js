@@ -4,6 +4,7 @@ const state = require('../../state');
 const pull = require('../../commands/pull');
 const push = require('../../commands/push');
 const photos = require('../../commands/photos');
+const attributes = require('../../commands/attributes');
 const backup = require('../../push/backup');
 const { undoInStore, refreshExcel } = require('../../push/undo');
 const jobs = require('../jobs');
@@ -183,6 +184,59 @@ router.post('/push', requirePermission('push'), async (req, res, next) => {
       } finally {
         await backup.saveBackup(pool, runId, review.reviewed.plan, snapshot).catch((e) => console.error('No se pudo guardar el respaldo del push:', e.message));
         await saveChangeLog(runId, review.reviewed.plan).catch((e) => console.error('No se pudo guardar el historial de cambios:', e.message));
+      }
+    });
+    res.status(202).json({ ok: true, job });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ---------- Reparación de atributos (solo administrador) ----------
+let pendingAttributes = null;
+
+router.post('/attributes/review', requirePermission('attributes'), async (req, res, next) => {
+  try {
+    const user = req.user;
+    const job = await jobs.start('attrs-review', user, async ({ log, progress }) => {
+      const review = await attributes.reviewAttributes({ log, progress });
+      pendingAttributes = { userId: user.id, review };
+      return { summary: review.summary, details: attributes.publicAttributes(review) };
+    });
+    res.status(202).json({ ok: true, job });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/attributes/fix', requirePermission('attributes'), async (req, res, next) => {
+  try {
+    const pending = pendingAttributes;
+    if (!pending || String(pending.userId) !== String(req.user.id)) {
+      return res.status(400).json({ ok: false, message: 'Primero haz "Revisar atributos".' });
+    }
+    if (Date.now() - pending.review.reviewedAt > REVIEW_TTL_MS) {
+      pendingAttributes = null;
+      return res.status(400).json({ ok: false, message: 'La revisión tiene más de 30 minutos. Vuelve a "Revisar atributos".' });
+    }
+    pendingAttributes = null;
+
+    const job = await jobs.start('attrs-fix', req.user, async ({ runId, log, progress }) => {
+      try {
+        const result = await attributes.applyAttributes(pending.review, { log, progress });
+        return { summary: result.summary, details: attributes.publicAttributes(pending.review, { withResults: true }) };
+      } finally {
+        // Historial con cómo estaban y cómo quedaron, y respaldo de los atributos originales.
+        for (const item of pending.review.items.filter((i) => i.result)) {
+          await pool.query(
+            'INSERT INTO change_log (run_id, woo_id, sku, field, old_value, new_value, result, error, url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+            [runId, item.id, item.sku, 'Atributos', attributes.attrSummary(item.before), attributes.attrSummary(item.attributes), item.result.ok ? 'ok' : 'error', item.result.ok ? null : item.result.message, item.url],
+          ).catch((e) => console.error('No se pudo guardar el historial de atributos:', e.message));
+          await pool.query(
+            `INSERT INTO push_backups (run_id, kind, action, woo_id, sku, fields, before) VALUES ($1,'product','update',$2,$3,'["attributes"]'::jsonb,$4)`,
+            [runId, item.id, item.sku, JSON.stringify({ attributes: item.before })],
+          ).catch((e) => console.error('No se pudo guardar el respaldo de atributos:', e.message));
+        }
       }
     });
     res.status(202).json({ ok: true, job });

@@ -91,6 +91,11 @@ async function fetchProductsLite() {
   return getAll('products', { status: 'any', _fields: 'id,sku,name,type,status,images,categories,permalink', ...lang() });
 }
 
+// Productos variables con lo necesario para revisar sus atributos.
+async function fetchVariableProducts() {
+  return getAll('products', { type: 'variable', status: 'any', context: 'edit', _fields: 'id,sku,name,status,attributes,variations,permalink', ...lang() });
+}
+
 async function createTerm(taxonomyEndpoint, data) {
   const res = await request('post', taxonomyEndpoint, data);
   return res.data;
@@ -125,5 +130,5 @@ async function batch(endpoint, { create = [], update = [] }, onBatch = () => {})
 }
 
 module.exports = {
-  request, fetchTaxonomies, fetchProductsByIds, fetchVariationsByIds, fetchProductsBySkus, fetchAllVariations, fetchProductsAllLanguages, fetchProductsLite, createTerm, batch,
+  request, fetchTaxonomies, fetchProductsByIds, fetchVariationsByIds, fetchProductsBySkus, fetchAllVariations, fetchProductsAllLanguages, fetchProductsLite, fetchVariableProducts, createTerm, batch,
 };

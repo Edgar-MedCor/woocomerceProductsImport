@@ -175,13 +175,21 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
   });
   const toUpload = ready.filter((i) => !i.deferred);
 
+  // Padres variables sin foto cuyas variaciones ya tienen (p. ej. si su galería
+  // falló en una subida anterior): se les arma también, sin subir nada nuevo.
+  log('Buscando productos padre sin foto...');
+  const uploading = new Set(toUpload.filter((i) => i.target.kind === 'color' || i.type === TYPE.variation).map((i) => i.target.parentId));
+  const parentGalleries = (await findParentsWithoutPhoto()).filter((p) => !uploading.has(p.id));
+
   return {
     items,
+    parentGalleries,
     folders: scan.folders.map((f) => ({ relativePath: f.relativePath, folder: f.folder, parentSkuFolder: f.parentSkuFolder })),
     warnings: scan.warnings,
     summary: {
       'Carpetas revisadas': scan.scannedFolders,
       'Productos/colores con fotos nuevas': toUpload.length,
+      'Productos padre sin foto (se arma su galería)': parentGalleries.length,
       'Fotos a subir': toUpload.reduce((n, i) => n + i.files.length, 0),
       'Con error (no se suben)': items.filter((i) => i.errors.length).length,
       'Para la siguiente tanda': items.filter((i) => i.deferred).length,
@@ -189,6 +197,29 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
     },
     reviewedAt: new Date(),
   };
+}
+
+// Productos variables sin foto principal con al menos una variación con foto.
+async function findParentsWithoutPhoto() {
+  const products = await store.fetchProductsLite();
+  const out = [];
+  for (const p of products.filter((x) => x.type === 'variable' && !x.images?.length)) {
+    const variations = await store.fetchAllVariations(p.id);
+    if (variations.some((v) => v.image?.id)) out.push({ id: p.id, sku: p.sku, name: p.name });
+  }
+  return out;
+}
+
+// Galería del padre: la foto principal de cada variación, en el orden de las
+// variaciones. La primera queda como foto principal del padre y las demás en su galería.
+async function buildParentGallery(parentId) {
+  const variations = (await store.fetchAllVariations(parentId))
+    .sort((a, b) => (a.menu_order ?? 0) - (b.menu_order ?? 0) || a.id - b.id);
+  const imageIds = [...new Set(variations.map((v) => v.image?.id).filter(Boolean))];
+  if (!imageIds.length) return 0;
+  // Guardar las mismas fotos es idempotente: se reintenta si la tienda pide esperar (429).
+  await store.request('put', `products/${parentId}`, { images: imageIds.map((id) => ({ id })) });
+  return imageIds.length;
 }
 
 async function uploadFiles(item, { pool, runId }) {
@@ -286,33 +317,41 @@ async function applyPhotos(review, { pool, runId, log = console.log, progress = 
   // Galería del padre: una foto por variación (su foto principal), en el orden
   // de las variaciones. Solo para los productos variables cuyas variaciones
   // recibieron fotos ahora; los colores no subidos conservan su foto actual.
-  const parentIds = [...new Set(items
-    .filter((i) => i.result?.ok && (i.target.kind === 'color' || i.type === TYPE.variation))
-    .map((i) => i.target.parentId))];
+  // También los padres sin foto que encontró la revisión.
+  const parentIds = [...new Set([
+    ...items.filter((i) => i.result?.ok && (i.target.kind === 'color' || i.type === TYPE.variation)).map((i) => i.target.parentId),
+    ...(review.parentGalleries || []).map((p) => p.id),
+  ])];
+  const skuOf = new Map([
+    ...items.map((i) => [i.target.parentId, i.target.sku]),
+    ...(review.parentGalleries || []).map((p) => [p.id, p.sku]),
+  ]);
   let parentsUpdated = 0;
+  const failedParents = new Set();
   for (const parentId of parentIds) {
+    const label = skuOf.get(parentId) || `ID ${parentId}`;
     try {
-      const variations = (await store.fetchAllVariations(parentId))
-        .sort((a, b) => (a.menu_order ?? 0) - (b.menu_order ?? 0) || a.id - b.id);
-      const imageIds = [...new Set(variations.map((v) => v.image?.id).filter(Boolean))];
-      if (!imageIds.length) continue;
-      await store.request('put', `products/${parentId}`, { images: imageIds.map((id) => ({ id })) }, undefined, 2);
+      const count = await buildParentGallery(parentId);
+      if (!count) continue;
       parentsUpdated += 1;
-      log(`✔ Galería del producto ${parentId}: ${imageIds.length} foto(s), una por variación`);
+      log(`✔ Galería del producto ${label}: ${count} foto(s), una por variación`);
     } catch (error) {
-      log(`✖ No se pudo armar la galería del producto ${parentId}: ${error.response?.data?.message || error.message}`);
+      failedParents.add(parentId);
+      log(`✖ No se pudo armar la galería del producto ${label}: ${error.response?.data?.message || error.message}. Se reintenta en la próxima subida.`);
     }
+    await new Promise((r) => setTimeout(r, 500)); // respiro para el hosting
   }
+  review.parentResults = new Map((review.parentGalleries || []).map((p) => [p.id, !failedParents.has(p.id)]));
 
   // Se mueve la carpeta de SKU de primer nivel solo si todo lo que contiene
-  // (galería, colores, variaciones) se subió completo.
+  // (galería, colores, variaciones) se subió completo y la galería de su padre se armó.
   log(`Moviendo carpetas terminadas a "${config.photos.donePath}"...`);
   const moved = [];
   const notMoved = [];
   for (const top of review.folders.filter((f) => !f.parentSkuFolder)) {
     const group = review.items.filter((i) => i.path === top.relativePath || i.path.startsWith(`${top.relativePath}/`));
     if (!group.length) continue;
-    if (!group.every((i) => i.result?.ok)) {
+    if (!group.every((i) => i.result?.ok && !failedParents.has(i.target.parentId))) {
       if (group.some((i) => i.result)) notMoved.push(top.relativePath);
       continue;
     }
@@ -332,6 +371,7 @@ async function applyPhotos(review, { pool, runId, log = console.log, progress = 
       'Con error': items.length - ok.length,
       'Fotos subidas': ok.reduce((n, i) => n + i.result.mediaIds.length, 0),
       'Galerías de producto padre actualizadas': parentsUpdated,
+      'Galerías de producto padre con error': failedParents.size,
       'Carpetas movidas a subidas': moved.length,
     },
     notMoved,
@@ -356,8 +396,27 @@ function publicPhotos(review, { withResults = false } = {}) {
       skipped: [],
       errors: i.errors,
       warnings: i.warnings,
-    })),
-    results: withResults ? review.items.filter((i) => i.result).map((i) => ({ row: i.path, sku: i.label, ok: i.result.ok, message: i.result.message })) : undefined,
+    })).concat((review.parentGalleries || []).map((p) => ({
+      row: p.sku || `ID ${p.id}`,
+      kind: 'update',
+      type: 'Variable',
+      id: p.id,
+      sku: p.sku,
+      name: p.name,
+      attributes: null,
+      changes: [{ field: 'Galería del padre', from: null, to: 'Foto principal y galería con la primera foto de cada variación' }],
+      conflicts: [],
+      skipped: [],
+      errors: [],
+      warnings: ['No tiene foto, pero sus variaciones sí. No se sube nada nuevo.'],
+    }))),
+    results: withResults
+      ? review.items.filter((i) => i.result).map((i) => ({ row: i.path, sku: i.label, ok: i.result.ok, message: i.result.message }))
+        .concat((review.parentGalleries || []).filter((p) => review.parentResults?.has(p.id)).map((p) => ({
+          row: p.sku || `ID ${p.id}`, sku: p.sku, ok: review.parentResults.get(p.id),
+          message: review.parentResults.get(p.id) ? 'Galería del padre armada' : 'No se pudo armar la galería (ver Detalle); se reintenta en la próxima subida',
+        })))
+      : undefined,
   };
 }
 

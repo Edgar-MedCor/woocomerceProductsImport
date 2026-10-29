@@ -7,6 +7,7 @@ const {
   COL, ATTRIBUTE_COLUMNS, ATTR_KEYS, TYPE, ANY, DELETE_STATUS, EDITABLE_ON_UPDATE, VARIATION_STATUS_SLUG,
   isBlank, isDelete, splitList, splitCategories, canonical, same, applies, normalizeType, validateRow,
 } = require('./fields');
+const { isVariationAttribute, shouldVary, findGlobal, applyRule } = require('./attributeRules');
 
 const norm = (s) => String(s || '').trim().toLowerCase();
 const skuKey = (s) => (isBlank(s) ? null : String(s).trim().toUpperCase());
@@ -32,28 +33,39 @@ function parseOthers(text) {
 
 /**
  * Atributos que debe tener un producto variable según el Excel: opciones del
- * padre + valores usados por sus variaciones. Conserva el tipo (global/local) y
- * la configuración que el atributo ya tenga en la tienda, para no romper las
- * variaciones existentes.
+ * padre + valores usados por sus variaciones. Regla de la tienda: siempre
+ * globales y solo Color y Talla para variaciones (ver attributeRules.js). Un
+ * atributo local que se usa para variaciones se deja local: pasarlo a global
+ * rompería las variaciones existentes.
  */
 function desiredAttributes(parentRow, variationRows, storeProduct, globalAttrs) {
   const current = storeProduct?.attributes || [];
   const findCurrent = (names) => current.find((a) => names.includes(norm(a.name)));
-  const findGlobal = (names) => globalAttrs.find((g) => names.includes(norm(g.name)) || names.includes(norm(g.slug.replace(/^pa_/, ''))));
 
   const out = [];
+  const warnings = [];
+  // Color es la primera columna: al llegar a Talla ya se sabe si el producto tiene Color.
+  const withColor = () => out.some((a) => isVariationAttribute(a.name) && norm(a.name) === 'color');
   const add = (names, label, parentValue, variationValues) => {
     const usedByVariations = variationValues.filter((v) => !isBlank(v) && norm(v) !== ANY);
     const options = uniqueCaseInsensitive([...splitList(parentValue, '|'), ...usedByVariations]);
     if (!options.length) return;
     const cur = findCurrent(names);
-    const glob = cur ? null : findGlobal(names);
+    const glob = findGlobal(globalAttrs, names);
+    const forVariations = shouldVary(names, options, withColor());
+    // Otro atributo solo se deja para variaciones si las distingue (valores distintos entre ellas).
+    const distinguishes = uniqueCaseInsensitive(usedByVariations).length > 1;
+    const variation = forVariations || distinguishes;
+    if (!forVariations && distinguishes) warnings.push(`${cur?.name || label} se usa para variaciones porque sus variaciones tienen valores distintos; solo Color y Talla deberían.`);
+    const keepLocal = cur && !cur.id && variation;
+    if (keepLocal && glob) warnings.push(`${cur.name} es local y se usa para variaciones; no se pasa a global para no romper las variaciones.`);
+    const useGlobal = glob && !keepLocal;
     out.push({
-      id: cur ? cur.id : glob?.id || 0,
-      name: cur?.name || glob?.name || label,
+      id: useGlobal ? glob.id : cur?.id || 0,
+      name: useGlobal ? glob.name : cur?.name || label,
       options,
       visible: cur?.visible ?? true,
-      variation: Boolean(cur?.variation) || usedByVariations.length > 0,
+      variation,
       position: cur?.position ?? out.length,
     });
   };
@@ -67,7 +79,7 @@ function desiredAttributes(parentRow, variationRows, storeProduct, globalAttrs) 
   for (const [key, label] of otherNames) {
     add([key], label, parentOthers.get(key)?.value, variationOthers.map((m) => m.get(key)?.value));
   }
-  return out;
+  return { attributes: out, warnings };
 }
 
 const attrSignature = (list) => (list || [])
@@ -189,6 +201,12 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, canDel
     }
 
     if (item.type && item.kind !== 'delete') item.errors.push(...validateRow(item.data, item.type));
+    // Una variación sin precio no se puede comprar y WooCommerce no la muestra.
+    if (item.type === TYPE.variation && isBlank(row.regularPrice)) {
+      const clearsPrice = item.changes.some((c) => c.key === 'regularPrice');
+      if (item.kind === 'create' || clearsPrice) item.errors.push('La variación no tiene Precio normal. Sin precio no aparece en la tienda ni se puede comprar.');
+      else if (item.changes.length) item.warnings.push('Esta variación no tiene Precio normal en la tienda: no aparece ni se puede comprar. Agrégale precio.');
+    }
     items.push(item);
   }
 
@@ -378,8 +396,11 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, canDel
 
   // --- 6. Atributos de productos variables (opciones nuevas, valores cambiados) ---
   const parentsToSync = new Map(); // fila del padre -> item
+  // Un Variable que se toca por otra razón también se corrige si no cumple la regla de atributos.
+  const breaksRule = (item) => item.type === TYPE.variable && item.id && storeProducts.has(item.id)
+    && applyRule(storeProducts.get(item.id).attributes, taxonomies.attributes, (a) => a.variation).changes.length > 0;
   for (const item of items.filter((i) => !i.errors.length)) {
-    const touchesAttrs = item.kind === 'create' || item.typeChange || item.changes.some((c) => ATTR_KEYS.has(c.key) || c.key === 'otherAttributes');
+    const touchesAttrs = item.kind === 'create' || item.typeChange || item.changes.some((c) => ATTR_KEYS.has(c.key) || c.key === 'otherAttributes') || breaksRule(item);
     if (!touchesAttrs) continue;
     if (item.type === TYPE.variable) parentsToSync.set(item.row, item);
     if (item.type === TYPE.variation && item.parentRow) {
@@ -397,7 +418,8 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, canDel
   for (const parentItem of parentsToSync.values()) {
     if (parentItem.errors.length) continue;
     const storeProduct = parentItem.id ? storeProducts.get(parentItem.id) : null;
-    const desired = desiredAttributes(parentItem.data, variationsOf(parentItem.data), storeProduct, taxonomies.attributes);
+    const { attributes: desired, warnings } = desiredAttributes(parentItem.data, variationsOf(parentItem.data), storeProduct, taxonomies.attributes);
+    parentItem.warnings.push(...warnings);
     if (attrSignature(desired) !== attrSignature(storeProduct?.attributes)) {
       parentItem.attributes = desired;
       parentItem.changes = parentItem.changes.filter((c) => !ATTR_KEYS.has(c.key) && c.key !== 'otherAttributes');
