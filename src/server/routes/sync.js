@@ -80,7 +80,8 @@ router.post('/photos/links/check', requirePermission('photos'), async (req, res,
 router.post('/photos/links', requirePermission('photos'), async (req, res, next) => {
   try {
     const { folderId, folderPath } = req.body || {};
-    if (!folderId) return res.status(400).json({ ok: false, message: 'Falta la carpeta.' });
+    if (!folderId || typeof folderId !== 'string' || folderId.length > 200) return res.status(400).json({ ok: false, message: 'Falta la carpeta.' });
+    if (folderPath !== undefined && (typeof folderPath !== 'string' || folderPath.length > 1000)) return res.status(400).json({ ok: false, message: 'Ruta de carpeta inválida.' });
     const target = await photos.checkSku(req.body?.sku);
     await saveLink(pool, { folderId: String(folderId), folderPath, sku: target.sku, userId: req.user.id });
     await logLink(req.user, { folderPath, newSku: target.sku });

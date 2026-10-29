@@ -18,6 +18,8 @@ const { TYPE, isBlank } = require('../push/fields');
 const key = (s) => String(s || '').trim().toUpperCase();
 // estilo (letras+números) + talla (letras) + color (2 o 3 dígitos; en la tienda casi siempre 3)
 const SKU_PARTS = /^([A-Z]+\d+)([A-Z]+)(\d{2,3})$/;
+// Lo que se acepta al relacionar una carpeta a mano (mismo criterio que en el panel).
+const SKU_FORMAT = /^[A-Z0-9][A-Z0-9._-]{1,59}$/;
 const slug = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w.-]+/g, '-').replace(/-+/g, '-');
 
 async function withConcurrency(items, limit, worker) {
@@ -118,6 +120,7 @@ const describe = (t) => ({
 async function checkSku(sku) {
   const code = String(sku || '').trim().toUpperCase();
   if (!code) throw new Error('Escribe el SKU.');
+  if (!SKU_FORMAT.test(code)) throw new Error('El SKU solo puede tener letras, números, guion, punto o guion bajo (sin espacios).');
   const target = (await loadTargets()).resolve(code);
   if (!target) throw new Error(`"${code}" no coincide con ningún SKU ni estilo+color del Excel. Revisa que esté bien escrito o que el producto ya esté dado de alta.`);
   return { sku: code, ...describe(target) };

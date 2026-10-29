@@ -71,7 +71,7 @@ async function scanPhotos(rootPath, resolve, resolveChild, { onProgress = () => 
         if (target) sku = String(linked.sku).trim().toUpperCase();
         if (!target) {
           warnings.push({
-            path: where, folderId: item.id, unmatched: true, linked,
+            kind: 'link-broken', path: where, folderId: item.id, unmatched: true, linked, fotos: images.length,
             message: `Se relacionó a mano con "${linked.sku}", pero ese SKU ya no está en el Excel. Quita la relación o relaciónala con otro SKU.`,
           });
         }
@@ -91,19 +91,21 @@ async function scanPhotos(rootPath, resolve, resolveChild, { onProgress = () => 
       if (sku) {
         const byLink = Boolean(linked) && sku === String(linked.sku).trim().toUpperCase();
         folders.push({ sku, target, folder: item, relativePath, files: images, parentSkuFolder: skuAncestor, linked: byLink ? linked : null });
-        if (!images.length && !subfolders.length) warnings.push({ path: where, message: 'Carpeta de SKU sin fotos.' });
+        if (!images.length && !subfolders.length) warnings.push({ kind: 'empty', path: where, message: 'Carpeta de SKU sin fotos.' });
       } else if (images.length && !linked) {
         warnings.push({
+          kind: relativePath ? 'unmatched' : 'root',
           path: where,
           folderId: relativePath ? item.id : null,
           unmatched: Boolean(relativePath),
+          fotos: images.length,
           message: relativePath
             ? `${images.length} foto(s) en una carpeta cuyo nombre no coincide con ningún SKU ni estilo+color de la tienda. ¿Está mal escrito, o el producto aún no se ha dado de alta?`
             : `${images.length} foto(s) sueltas en la carpeta raíz: deben ir dentro de una carpeta con el SKU.`,
         });
       }
       if (unsupported.length) {
-        warnings.push({ path: where, message: `Formato no compatible (convierte a JPG): ${unsupported.map((f) => f.name).join(', ')}` });
+        warnings.push({ kind: 'unsupported', path: where, message: `Formato no compatible (convierte a JPG): ${unsupported.map((f) => f.name).join(', ')}` });
       }
 
       for (const sub of subfolders) {
@@ -125,7 +127,16 @@ async function scanPhotos(rootPath, resolve, resolveChild, { onProgress = () => 
   for (const [sku, list] of bySku) {
     if (list.length > 1) {
       duplicated.add(sku);
-      warnings.push({ path: list.map((f) => f.relativePath).join(' y '), message: `El SKU ${sku} tiene ${list.length} carpetas. Junta las fotos en una sola; mientras tanto no se sube.` });
+      // Si una de ellas se relacionó a mano, desde el aviso se puede quitar esa relación.
+      const linkedOne = list.find((f) => f.linked);
+      warnings.push({
+        kind: 'duplicate',
+        path: list.map((f) => f.relativePath).join(' y '),
+        folderId: linkedOne?.folder.id || null,
+        linked: linkedOne?.linked || null,
+        linkedPath: linkedOne?.relativePath || null,
+        message: `El SKU ${sku} tiene ${list.length} carpetas. Junta las fotos en una sola; mientras tanto no se sube.`,
+      });
     }
   }
 

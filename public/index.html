@@ -7,9 +7,20 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Barra de carga mientras el panel espera al servidor -->
+  <div class="top-progress" aria-hidden="true"></div>
+
+  <!-- Carga inicial -->
+  <section id="bootView" class="boot" role="status" aria-live="polite">
+    <strong class="boot-brand">Wayan Sync</strong>
+    <span id="bootSpinner" class="spinner large" aria-hidden="true"></span>
+    <p id="bootMessage" class="muted">Comprobando tu sesión…</p>
+    <button id="bootRetry" type="button" class="hidden">Reintentar</button>
+  </section>
+
   <!-- Login -->
   <section id="loginView" class="login hidden">
-    <form id="loginForm" class="card login-card">
+    <form id="loginForm" class="card login-card" novalidate>
       <h1>Wayan Sync</h1>
       <p class="muted">Catálogo de productos · Excel ↔ tienda</p>
       <label>Usuario <input name="username" autocomplete="username" required></label>
@@ -115,7 +126,7 @@
           <div class="tiles">
             <div class="tile"><span id="tilePending">—</span><small>Productos/colores listos para subir</small></div>
             <div class="tile"><span id="tilePendingPhotos">—</span><small>Fotos pendientes</small></div>
-            <div class="tile warn"><span id="tileBlocked">—</span><small>Carpetas con problemas</small></div>
+            <button type="button" class="tile warn" id="tileBlockedBtn" title="Ir a las carpetas con problemas"><span id="tileBlocked">—</span><small>Carpetas con problemas</small></button>
             <div class="tile err"><span id="tileNoPhotos">—</span><small>Productos sin fotos en la tienda</small></div>
             <div class="tile ok"><span id="tileUploaded">—</span><small>Fotos subidas (7 días)</small></div>
           </div>
@@ -123,14 +134,21 @@
 
         <div class="job-slot"></div>
 
-        <div class="grid">
-          <div class="card">
-            <h2>Pendientes por categoría</h2>
-            <table class="small-table"><thead><tr><th>Categoría</th><th>Carpetas</th><th>Fotos</th><th>Con problema</th></tr></thead><tbody id="dashCategories"></tbody></table>
+        <div class="card" id="dashWarningsCard">
+          <div class="job-head">
+            <h2>Carpetas con problemas</h2>
+            <span id="dashWarningsInfo" class="muted"></span>
           </div>
-          <div class="card">
-            <h2>Avisos de carpetas</h2>
-            <ul id="dashWarnings" class="notes"></ul>
+          <p class="muted">Las carpetas cuyo nombre no coincide con ningún SKU se pueden relacionar aquí con su producto. Las demás se corrigen en OneDrive y se resuelven en la siguiente revisión.</p>
+          <div class="filters" id="warnFilters" role="group" aria-label="Filtrar por tipo de problema"></div>
+          <div class="filters">
+            <input id="warnSearch" type="search" placeholder="Buscar carpeta o SKU…" aria-label="Buscar carpeta o SKU">
+          </div>
+          <div class="table-wrap">
+            <table class="small-table warn-table">
+              <thead><tr><th>Carpeta</th><th>Problema</th><th>Qué hacer</th></tr></thead>
+              <tbody id="dashWarnings"></tbody>
+            </table>
           </div>
         </div>
 
@@ -152,9 +170,15 @@
           <div class="table-wrap"><table class="small-table"><thead><tr><th>SKU</th><th>Producto</th><th>Tipo</th><th>Categoría</th><th>Estado</th><th>Carpeta</th></tr></thead><tbody id="dashNoPhotos"></tbody></table></div>
         </div>
 
-        <div class="card">
-          <h2>Últimas subidas</h2>
-          <div class="table-wrap"><table class="small-table"><thead><tr><th>SKU / color</th><th>Fotos</th><th>Fecha</th><th>Quién</th></tr></thead><tbody id="dashRecent"></tbody></table></div>
+        <div class="grid">
+          <div class="card">
+            <h2>Pendientes por categoría</h2>
+            <div class="table-wrap"><table class="small-table"><thead><tr><th>Categoría</th><th>Carpetas</th><th>Fotos</th><th>Con problema</th></tr></thead><tbody id="dashCategories"></tbody></table></div>
+          </div>
+          <div class="card">
+            <h2>Últimas subidas</h2>
+            <div class="table-wrap"><table class="small-table"><thead><tr><th>SKU / color</th><th>Fotos</th><th>Fecha</th><th>Quién</th></tr></thead><tbody id="dashRecent"></tbody></table></div>
+          </div>
         </div>
       </section>
 
@@ -202,14 +226,14 @@
             <tbody id="usersBody"></tbody>
           </table>
         </div>
-        <form id="newUserForm" class="card form-inline">
+        <form id="newUserForm" class="card form-inline" novalidate>
           <h2>Nuevo usuario</h2>
-          <label>Nombre <input name="displayName" required></label>
-          <label>Usuario <input name="username" required pattern="[A-Za-z0-9._\-]{3,40}"></label>
-          <label>Contraseña <input name="password" type="password" minlength="8" required></label>
-          <label>Perfil <select name="role" id="roleSelect"></select></label>
+          <label class="field">Nombre <input name="displayName" autocomplete="off"><span class="field-error" data-for="displayName"></span></label>
+          <label class="field">Usuario <input name="username" autocomplete="off"><span class="field-error" data-for="username"></span></label>
+          <label class="field">Contraseña <input name="password" type="password" autocomplete="new-password"><span class="field-error" data-for="password"></span></label>
+          <label class="field">Perfil <select name="role" id="roleSelect"></select><span class="field-error" data-for="role"></span></label>
           <button type="submit">Crear</button>
-          <p id="newUserMsg" class="muted"></p>
+          <p id="newUserMsg" class="field-error" role="alert"></p>
         </form>
         <div class="card">
           <h2>Qué puede hacer cada perfil</h2>
@@ -235,6 +259,23 @@
       </section>
     </main>
   </div>
+
+  <!-- Ventana propia del panel (confirmaciones y formularios) y avisos flotantes -->
+  <dialog id="modal" class="modal" aria-labelledby="modalTitle">
+    <form id="modalForm" novalidate>
+      <header class="modal-head">
+        <span id="modalIcon" class="modal-icon" aria-hidden="true"></span>
+        <h2 id="modalTitle"></h2>
+      </header>
+      <div id="modalBody" class="modal-body"></div>
+      <p id="modalError" class="form-error" role="alert"></p>
+      <footer class="modal-actions">
+        <button type="button" id="modalCancel" class="secondary">Cancelar</button>
+        <button type="submit" id="modalOk">Aceptar</button>
+      </footer>
+    </form>
+  </dialog>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script src="app.js"></script>
 </body>
