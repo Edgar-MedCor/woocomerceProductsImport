@@ -2,20 +2,23 @@
 // cambió) y escrituras por lotes.
 const config = require('../config');
 const { getApi } = require('./client');
+const throttle = require('./throttle');
 
 const BATCH_SIZE = Number(process.env.WOO_BATCH_SIZE) || 20;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Reintenta errores pasajeros. Solo para lecturas y para escrituras idempotentes.
+// El 429 lo maneja throttle (pausa y repite: el hosting rechazó la petición sin
+// procesarla). Los demás errores pasajeros se reintentan aquí, solo para
+// lecturas y escrituras idempotentes.
 async function request(method, endpoint, data, params, attempts = 4) {
   for (let attempt = 1; ; attempt += 1) {
     try {
       const api = getApi();
-      const res = method === 'get' ? await api.get(endpoint, data) : await api[method](endpoint, data, params);
+      const res = await throttle.axiosCall(() => (method === 'get' ? api.get(endpoint, data) : api[method](endpoint, data, params)));
       return res;
     } catch (error) {
       const status = error.response?.status;
-      const transient = !status || status === 429 || status >= 500;
+      const transient = !status || status >= 500;
       if (!transient || attempt >= attempts) {
         const detail = error.response?.data?.message;
         if (detail) error.message = `${error.message} — ${detail}`;

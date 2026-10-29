@@ -1,6 +1,7 @@
 // Sube archivos a la biblioteca de medios de WordPress. Las llaves de
 // WooCommerce no lo permiten: se usa una contraseña de aplicación de WordPress.
 const config = require('../config');
+const throttle = require('./throttle');
 
 function authHeader() {
   const token = Buffer.from(`${config.wp.user()}:${config.wp.appPassword().replace(/\s+/g, '')}`).toString('base64');
@@ -10,7 +11,7 @@ function authHeader() {
 async function uploadMedia({ buffer, filename, mime, title }) {
   const url = `${config.woo.url().replace(/\/$/, '')}/wp-json/wp/v2/media`;
   for (let attempt = 1; ; attempt += 1) {
-    const res = await fetch(url, {
+    const res = await throttle.fetchCall(() => fetch(url, {
       method: 'POST',
       headers: {
         Authorization: authHeader(),
@@ -18,20 +19,20 @@ async function uploadMedia({ buffer, filename, mime, title }) {
         'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
       },
       body: buffer,
-    });
+    }));
     if (res.ok) {
       const media = await res.json();
       if (title) {
         // Texto alternativo = nombre del producto (accesibilidad y SEO). Si falla no es grave.
-        await fetch(`${url}/${media.id}`, {
+        await throttle.fetchCall(() => fetch(`${url}/${media.id}`, {
           method: 'POST',
           headers: { Authorization: authHeader(), 'Content-Type': 'application/json' },
           body: JSON.stringify({ alt_text: title, title }),
-        }).catch(() => {});
+        })).catch(() => {});
       }
       return { id: media.id, url: media.source_url };
     }
-    const transient = res.status === 429 || res.status >= 500;
+    const transient = res.status >= 500; // el 429 ya lo esperó throttle
     if (transient && attempt < 3) {
       await new Promise((r) => setTimeout(r, 3000 * attempt));
       continue;

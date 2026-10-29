@@ -1,4 +1,5 @@
 const { pool } = require('./db');
+const throttle = require('../woo/throttle');
 
 // Una sincronización a la vez POR ÁREA: dos tareas del Excel (traer, revisar,
 // subir, deshacer) podrían pisarse, pero las fotos no tocan el Excel y pueden
@@ -63,6 +64,8 @@ async function start(type, user, task) {
 
   // No se espera: el panel consulta el avance con GET /api/sync/current.
   (async () => {
+    // Si la tienda pide bajar el ritmo, el Detalle lo dice (en vez de parecer atorado).
+    const stopListening = throttle.onPause(ctx.log);
     try {
       const result = await task(ctx);
       Object.assign(job, { status: 'success', summary: result?.summary || null, details: result?.details || null, webUrl: result?.webUrl || null });
@@ -70,6 +73,7 @@ async function start(type, user, task) {
       const detail = error.response?.data?.message;
       Object.assign(job, { status: 'error', error: detail ? `${error.message} — ${detail}` : error.message, errorCode: error.code || null });
     } finally {
+      stopListening();
       job.finishedAt = new Date().toISOString();
       await pool.query(
         'UPDATE sync_runs SET status = $2, finished_at = now(), summary = $3, error = $4 WHERE id = $1',

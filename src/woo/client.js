@@ -1,5 +1,6 @@
 const WooCommerceRestApi = require('@woocommerce/woocommerce-rest-api').default;
 const config = require('../config');
+const throttle = require('./throttle');
 
 let api;
 function getApi() {
@@ -13,14 +14,14 @@ function getApi() {
   return api;
 }
 
-// Reintenta errores pasajeros (502/503/504, 429, red caída) con espera creciente.
+// Reintenta errores pasajeros (502/503/504, red caída) con espera creciente; el 429 lo maneja throttle.
 async function get(endpoint, params, attempts = 4) {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      return await getApi().get(endpoint, params);
+      return await throttle.axiosCall(() => getApi().get(endpoint, params));
     } catch (error) {
       const status = error.response?.status;
-      const transient = !status || status === 429 || status >= 500;
+      const transient = !status || status >= 500;
       if (!transient || attempt >= attempts) throw error;
       await new Promise((r) => setTimeout(r, 2000 * 2 ** (attempt - 1)));
     }
