@@ -2,7 +2,10 @@
 // corta con 429 ("demasiadas peticiones") si llegan muchas seguidas: aquí se
 // espacian y, si aun así pide esperar, se pausa TODO el proceso (no solo esa
 // petición) el tiempo que indique, y luego se sigue sin marcar error.
-const MIN_INTERVAL_MS = process.env.WOO_MIN_INTERVAL_MS ? Number(process.env.WOO_MIN_INTERVAL_MS) : 800;
+const config = require('../config');
+
+// Directo al servidor (WOO_ORIGIN_IP) no hay límite del CDN y se puede ir más rápido.
+const MIN_INTERVAL_MS = process.env.WOO_MIN_INTERVAL_MS ? Number(process.env.WOO_MIN_INTERVAL_MS) : (config.woo.originIp ? 250 : 800);
 const PAUSES_S = [30, 60, 120, 240, 300]; // si el hosting no dice cuánto esperar
 const MAX_PAUSE_S = 600;
 

@@ -1,6 +1,7 @@
 const WooCommerceRestApi = require('@woocommerce/woocommerce-rest-api').default;
 const config = require('../config');
 const throttle = require('./throttle');
+const { httpsAgent } = require('./http');
 
 let api;
 function getApi() {
@@ -10,6 +11,7 @@ function getApi() {
     consumerSecret: config.woo.secret(),
     version: 'wc/v3',
     queryStringAuth: true,
+    axiosConfig: { httpsAgent },
   });
   return api;
 }

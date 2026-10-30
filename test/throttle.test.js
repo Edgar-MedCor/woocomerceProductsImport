@@ -35,3 +35,22 @@ test('Retry-After en segundos o como fecha', () => {
   assert.ok(s >= 19 && s <= 21);
   assert.equal(throttle.retryAfterSeconds('99999'), 600, 'nunca más de 10 minutos');
 });
+
+test('WOO_ORIGIN_IP: el dominio de la tienda se conecta a esa IP; los demás no cambian', async () => {
+  const config = require('../src/config');
+  const { httpsAgent } = require('../src/woo/http');
+  const lookup = httpsAgent.options.lookup;
+  const host = new URL(config.woo.url()).hostname;
+  const previous = config.woo.originIp;
+  config.woo.originIp = '203.0.113.7';
+  try {
+    const one = await new Promise((resolve) => lookup(host, {}, (err, address, family) => resolve({ address, family })));
+    assert.deepEqual(one, { address: '203.0.113.7', family: 4 });
+    const all = await new Promise((resolve) => lookup(host, { all: true }, (err, list) => resolve(list)));
+    assert.deepEqual(all, [{ address: '203.0.113.7', family: 4 }]);
+    const other = await new Promise((resolve) => lookup('localhost', {}, (err, address) => resolve(address)));
+    assert.notEqual(other, '203.0.113.7');
+  } finally {
+    config.woo.originIp = previous;
+  }
+});

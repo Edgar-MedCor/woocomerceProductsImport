@@ -203,7 +203,8 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
 async function findParentsWithoutPhoto() {
   const products = await store.fetchProductsLite();
   const out = [];
-  for (const p of products.filter((x) => x.type === 'variable' && !x.images?.length)) {
+  // Solo los que tienen variaciones: los Variable vacíos (variantes sueltas viejas) no tienen de dónde sacar foto.
+  for (const p of products.filter((x) => x.type === 'variable' && !x.images?.length && x.variations?.length)) {
     const variations = await store.fetchAllVariations(p.id);
     if (variations.some((v) => v.image?.id)) out.push({ id: p.id, sku: p.sku, name: p.name });
   }

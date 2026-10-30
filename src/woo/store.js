@@ -91,7 +91,7 @@ async function fetchProductsAllLanguages(ids) {
 
 // Todos los productos (sin variaciones) con solo los campos del tablero de fotos y del reporte de variantes sueltas.
 async function fetchProductsLite() {
-  return getAll('products', { status: 'any', _fields: 'id,sku,name,type,status,images,categories,permalink', ...lang() });
+  return getAll('products', { status: 'any', _fields: 'id,sku,name,type,status,images,categories,permalink,variations', ...lang() });
 }
 
 // Productos variables con lo necesario para revisar sus atributos.

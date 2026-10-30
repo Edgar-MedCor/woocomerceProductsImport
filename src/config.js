@@ -20,6 +20,8 @@ module.exports = {
     secret: () => required('WOO_SECRET'),
     lang: process.env.WOO_LANG || 'es',
     concurrency: Number(process.env.WOO_CONCURRENCY) || 5,
+    // IP del servidor real de la tienda, para no pasar por el CDN (ver woo/http.js).
+    originIp: (process.env.WOO_ORIGIN_IP || '').trim(),
   },
   ms: {
     clientId: () => required('MS_CLIENT_ID'),
