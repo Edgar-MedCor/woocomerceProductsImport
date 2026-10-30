@@ -44,4 +44,16 @@ async function uploadMedia({ buffer, filename, mime, title }) {
   }
 }
 
-module.exports = { uploadMedia };
+// ¿Sigue existiendo la imagen en la Biblioteca de medios? (alguien pudo borrarla)
+async function mediaExists(id) {
+  const url = `${config.woo.url().replace(/\/$/, '')}/wp-json/wp/v2/media/${id}`;
+  try {
+    await throttle.axiosCall(() => axios.get(url, { params: { context: 'edit', _fields: 'id' }, headers: { Authorization: authHeader() }, httpsAgent, timeout: 60000 }));
+    return true;
+  } catch (error) {
+    if (error.response?.status === 404 || error.response?.status === 410) return false;
+    throw error;
+  }
+}
+
+module.exports = { uploadMedia, mediaExists };

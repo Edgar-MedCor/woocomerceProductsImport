@@ -9,7 +9,7 @@ const path = require('path').posix;
 const config = require('../config');
 const onedrive = require('../storage/onedrive');
 const store = require('../woo/store');
-const { uploadMedia } = require('../woo/media');
+const { uploadMedia, mediaExists } = require('../woo/media');
 const { readWorkbook } = require('../excel/reader');
 const { scanPhotos } = require('../photos/scan');
 const { prepareImage } = require('../photos/image');
@@ -305,8 +305,24 @@ async function applyPhotos(review, { pool, runId, log = console.log, progress = 
 
   await withConcurrency(items, config.photos.concurrency, async (item) => {
     try {
-      const mediaIds = await uploadFiles(item, { pool, runId });
-      item.result = { ok: true, message: await assign(item, mediaIds), mediaIds };
+      let mediaIds = await uploadFiles(item, { pool, runId });
+      let message;
+      try {
+        message = await assign(item, mediaIds);
+      } catch (error) {
+        // Una foto ya subida antes pudo borrarse de la Biblioteca de medios: se
+        // olvidan las que ya no existen, se vuelven a subir y se asigna otra vez.
+        const text = error.response?.data?.message || error.message || '';
+        if (!pool || !/#\d+/.test(text) || !/imagen|image/i.test(text)) throw error;
+        const missing = [];
+        for (const id of new Set(mediaIds)) if (!(await mediaExists(id))) missing.push(id);
+        if (!missing.length) throw error;
+        await pool.query('DELETE FROM photo_uploads WHERE media_id = ANY($1::bigint[])', [missing]);
+        log(`↻ ${item.label}: ${missing.length} foto(s) ya no existían en WordPress (se borraron de la biblioteca); se vuelven a subir.`);
+        mediaIds = await uploadFiles(item, { pool, runId });
+        message = await assign(item, mediaIds);
+      }
+      item.result = { ok: true, message, mediaIds };
     } catch (error) {
       item.result = { ok: false, message: error.response?.data?.message || error.message };
     }
