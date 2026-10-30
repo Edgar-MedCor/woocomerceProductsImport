@@ -14,7 +14,10 @@ async function uploadMedia({ buffer, filename, mime, title }) {
   const url = `${config.woo.url().replace(/\/$/, '')}/wp-json/wp/v2/media`;
   for (let attempt = 1; ; attempt += 1) {
     try {
+      // Texto alternativo y título = nombre del producto (accesibilidad y SEO). Van en
+      // la misma subida (WordPress los toma de los parámetros) para no gastar otra petición.
       const { data: media } = await throttle.axiosCall(() => axios.post(url, buffer, {
+        params: title ? { alt_text: title, title } : undefined,
         headers: {
           Authorization: authHeader(),
           'Content-Type': mime,
@@ -25,14 +28,6 @@ async function uploadMedia({ buffer, filename, mime, title }) {
         maxContentLength: Infinity,
         timeout: 120000,
       }));
-      if (title) {
-        // Texto alternativo = nombre del producto (accesibilidad y SEO). Si falla no es grave.
-        await throttle.axiosCall(() => axios.post(`${url}/${media.id}`, { alt_text: title, title }, {
-          headers: { Authorization: authHeader() },
-          httpsAgent,
-          timeout: 60000,
-        })).catch(() => {});
-      }
       return { id: media.id, url: media.source_url };
     } catch (error) {
       const status = error.response?.status;

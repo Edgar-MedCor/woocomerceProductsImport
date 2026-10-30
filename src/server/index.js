@@ -62,7 +62,7 @@ app.use((error, _req, res, _next) => {
 });
 
 migrate()
-  .then(() => app.listen(PORT, HOST, () => console.log(`Panel Wayan Sync en http://${HOST}:${PORT}`)))
+  .then(() => app.listen(PORT, HOST, () => console.log(`Panel Wayan Sync en http://${HOST}:${PORT} · ${require('../woo/http').describeRoute()}`)))
   .catch((error) => {
     console.error('No se pudo preparar la base de datos:', error.message);
     process.exit(1);

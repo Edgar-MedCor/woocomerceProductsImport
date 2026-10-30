@@ -19,4 +19,9 @@ function lookup(hostname, options, callback) {
 
 const httpsAgent = new https.Agent({ keepAlive: true, lookup });
 
-module.exports = { httpsAgent, usingOrigin: () => Boolean(config.woo.originIp) };
+// Para el Detalle de cada tarea y el arranque: por dónde se está hablando con la tienda.
+const describeRoute = () => (config.woo.originIp
+  ? 'Conexión con la tienda: directa al servidor ' + config.woo.originIp + ' (sin CDN).'
+  : 'Conexión con la tienda: por el dominio (pasa por el CDN de Hostinger; define WOO_ORIGIN_IP para evitar los 429).');
+
+module.exports = { httpsAgent, usingOrigin: () => Boolean(config.woo.originIp), describeRoute };

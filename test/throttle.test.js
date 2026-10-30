@@ -54,3 +54,17 @@ test('WOO_ORIGIN_IP: el dominio de la tienda se conecta a esa IP; los demás no 
     config.woo.originIp = previous;
   }
 });
+
+test('Una petición a la vez: aunque se lancen varias juntas, no se enciman', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const call = () => throttle.fetchCall(async () => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((r) => setTimeout(r, 30));
+    active -= 1;
+    return { status: 200, ok: true, headers: new Map() };
+  });
+  await Promise.all([call(), call(), call()]);
+  assert.equal(maxActive, 1);
+});

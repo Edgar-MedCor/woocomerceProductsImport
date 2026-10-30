@@ -1,5 +1,6 @@
 const { pool } = require('./db');
 const throttle = require('../woo/throttle');
+const { describeRoute } = require('../woo/http');
 
 // Una sincronización a la vez POR ÁREA: dos tareas del Excel (traer, revisar,
 // subir, deshacer) podrían pisarse, pero las fotos no tocan el Excel y pueden
@@ -66,6 +67,7 @@ async function start(type, user, task) {
   (async () => {
     // Si la tienda pide bajar el ritmo, el Detalle lo dice (en vez de parecer atorado).
     const stopListening = throttle.onPause(ctx.log);
+    ctx.log(describeRoute());
     try {
       const result = await task(ctx);
       Object.assign(job, { status: 'success', summary: result?.summary || null, details: result?.details || null, webUrl: result?.webUrl || null });
