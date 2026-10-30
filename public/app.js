@@ -821,7 +821,9 @@ async function linkFolder(w, input, button, fail) {
   });
   if (!done) return;
   linkDrafts.delete(w.folderId);
-  toast(`Carpeta relacionada con ${target.label}. El tablero se está actualizando.`, 'success');
+  // Sale de la lista al momento; pasa a "Carpetas pendientes" cuando termine de actualizarse el tablero.
+  if (dashData?.avisos) dashData.avisos = dashData.avisos.filter((a) => a.folderId !== w.folderId || !(a.unmatched || a.kind === 'link-broken'));
+  toast(`Carpeta relacionada con ${target.label}. Sale de esta lista y aparecerá en "Carpetas pendientes" cuando termine de actualizarse el tablero.`, 'success');
   renderDashboard(true);
   watchDashboard();
 }

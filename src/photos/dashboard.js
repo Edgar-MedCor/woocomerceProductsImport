@@ -94,9 +94,23 @@ async function buildDashboard(pool, { log = () => {} } = {}) {
 let cache = null;
 let running = null;
 let again = false; // se pidió actualizar mientras ya corría (ej. se relacionó una carpeta)
+// Carpetas recién relacionadas -> cuándo. Su aviso se quita al momento, sin
+// esperar a que termine la actualización (que puede tardar minutos), y se sigue
+// ocultando si llega el resultado de una actualización que empezó antes.
+const linkedAt = new Map();
+
+const hideLinked = (d, startedAt = 0) => d && {
+  ...d,
+  avisos: (d.avisos || []).filter((w) => !(w.folderId && linkedAt.get(w.folderId) > startedAt && (w.unmatched || w.kind === 'link-broken'))),
+};
 
 function getDashboard() {
   return { dashboard: cache, refreshing: Boolean(running) };
+}
+
+function forgetWarning(folderId) {
+  linkedAt.set(folderId, Date.now());
+  cache = hideLinked(cache);
 }
 
 function refreshDashboard(pool) {
@@ -104,8 +118,12 @@ function refreshDashboard(pool) {
     again = true;
     return running;
   }
+  const startedAt = Date.now();
   running = buildDashboard(pool)
-    .then((d) => { cache = d; })
+    .then((d) => {
+      cache = hideLinked(d, startedAt);
+      for (const [id, at] of linkedAt) if (at <= startedAt) linkedAt.delete(id); // esta ya lo reflejó
+    })
     .catch((error) => { cache = { ...(cache || {}), error: error.message, updatedAt: new Date().toISOString() }; })
     .finally(() => {
       running = null;
@@ -117,4 +135,4 @@ function refreshDashboard(pool) {
   return running;
 }
 
-module.exports = { getDashboard, refreshDashboard, buildDashboard };
+module.exports = { getDashboard, refreshDashboard, buildDashboard, forgetWarning };

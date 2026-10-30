@@ -86,6 +86,7 @@ router.post('/photos/links', requirePermission('photos'), async (req, res, next)
     const target = await photos.checkSku(req.body?.sku);
     await saveLink(pool, { folderId: String(folderId), folderPath, sku: target.sku, userId: req.user.id });
     await logLink(req.user, { folderPath, newSku: target.sku });
+    dashboard.forgetWarning(String(folderId));
     dashboard.refreshDashboard(pool);
     res.status(201).json({ ok: true, target, ...dashboard.getDashboard() });
   } catch (error) {
