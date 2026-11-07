@@ -9,7 +9,7 @@ const path = require('path').posix;
 const config = require('../config');
 const onedrive = require('../storage/onedrive');
 const store = require('../woo/store');
-const { uploadMedia, mediaExists } = require('../woo/media');
+const { uploadMedia, mediaExists, refreshMediaIndex, mediaFor } = require('../woo/media');
 const { readWorkbook } = require('../excel/reader');
 const { scanPhotos } = require('../photos/scan');
 const { prepareImage } = require('../photos/image');
@@ -104,7 +104,44 @@ async function loadTargets() {
   const excelBuffer = await onedrive.downloadFile(config.excelPath());
   if (!excelBuffer) throw new Error('No existe el Excel en OneDrive. Haz primero "Traer de la tienda".');
   const { rows } = await readWorkbook(excelBuffer);
-  return buildTargets(rows);
+  return { ...buildTargets(rows), rows };
+}
+
+/**
+ * Productos y variaciones del Excel sin fotos (y sin carpeta en esta revisión)
+ * cuyas fotos ya están en la Biblioteca de medios con el nombre SKU-1, SKU-2…
+ * o estilo+color-1… (las de todas las tallas de un color). No se sube nada:
+ * solo se asignan. `covered`: IDs que ya reciben fotos de una carpeta.
+ */
+function findInMedia(rows, resolve, covered, lookup = mediaFor) {
+  const items = [];
+  for (const r of rows) {
+    if (isBlank(r.id) || isBlank(r.sku) || !isBlank(r.images)) continue;
+    if (r.type !== TYPE.simple && r.type !== TYPE.variation) continue; // la galería del padre se arma de sus variaciones
+    if (covered.has(Number(r.id))) continue;
+    const sku = key(r.sku);
+    const m = sku.match(SKU_PARTS);
+    const code = [sku, m && m[1] + m[3]].filter(Boolean).find((c) => lookup(c).length);
+    if (!code) continue;
+    const target = resolve(sku);
+    if (!target || target.kind !== 'product' || !target.id) continue;
+    const media = lookup(code);
+    items.push({
+      source: 'media',
+      path: `Medios/${code}`,
+      target,
+      label: target.sku,
+      name: target.name,
+      type: target.type,
+      folder: null,
+      parentSkuFolder: null,
+      linked: null,
+      files: media.map((f) => ({ name: decodeURIComponent(f.url.split('/').pop()), mediaId: f.id })),
+      errors: target.type === TYPE.variation && !target.parentId ? ['No se encontró el producto padre de esta variación en el Excel.'] : [],
+      warnings: [`Fotos que ya están en Medios (${code}-1…): no se sube nada, solo se asignan.`],
+    });
+  }
+  return items;
 }
 
 const describe = (t) => ({
@@ -130,9 +167,9 @@ async function checkSku(sku) {
  * Paso 1: recorre las carpetas y arma la lista de qué fotos van a qué producto.
  * `links`: relaciones carpeta -> SKU hechas a mano en el panel (ver photos/links.js).
  */
-async function reviewPhotos({ log = console.log, progress = () => {}, links = new Map() } = {}) {
+async function reviewPhotos({ log = console.log, progress = () => {}, links = new Map(), media = true } = {}) {
   log('Leyendo los SKUs del Excel...');
-  const { resolve, resolveChild } = await loadTargets();
+  const { resolve, resolveChild, rows } = await loadTargets();
 
   log(`Recorriendo "${config.photos.pendingPath}" en OneDrive...`);
   const scan = await scanPhotos(config.photos.pendingPath, resolve, resolveChild, {
@@ -167,6 +204,17 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
     items.push(item);
   }
 
+  // Lo que no tiene foto ni carpeta: se busca en la Biblioteca de medios por nombre de archivo.
+  let fromMedia = [];
+  if (media) {
+    log('Buscando en Medios las fotos de los productos que no tienen (SKU-1, SKU-2…)...');
+    const read = await refreshMediaIndex({ onProgress: (n, total) => progress(n, total, 'Imágenes de Medios leídas') });
+    if (read) log(`${read} imagen(es) nuevas leídas de Medios.`);
+    const covered = new Set(items.flatMap((i) => (i.target.kind === 'color' ? i.target.variations.map((v) => v.id) : [i.target.id])).filter(Boolean));
+    fromMedia = findInMedia(rows, resolve, covered);
+    items.push(...fromMedia);
+  }
+
   // Volumen: se sube en tandas para no dejar el proceso horas corriendo.
   const ready = items.filter((i) => !i.errors.length);
   ready.slice(config.photos.maxSkusPerRun).forEach((i) => {
@@ -190,7 +238,8 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
       'Carpetas revisadas': scan.scannedFolders,
       'Productos/colores con fotos nuevas': toUpload.length,
       'Productos padre sin foto (se arma su galería)': parentGalleries.length,
-      'Fotos a subir': toUpload.reduce((n, i) => n + i.files.length, 0),
+      'Fotos a subir': toUpload.filter((i) => i.source !== 'media').reduce((n, i) => n + i.files.length, 0),
+      'Productos con fotos encontradas en Medios (no se suben)': fromMedia.filter((i) => !i.errors.length).length,
       'Con error (no se suben)': items.filter((i) => i.errors.length).length,
       'Para la siguiente tanda': items.filter((i) => i.deferred).length,
       Avisos: scan.warnings.length,
@@ -224,6 +273,7 @@ async function buildParentGallery(parentId) {
 }
 
 async function uploadFiles(item, { pool, runId }) {
+  if (item.source === 'media') return item.files.map((f) => f.mediaId); // ya están en WordPress
   const mediaIds = [];
   const t = item.target;
   const isCode = t.kind === 'color' && key(t.color).startsWith(key(t.sku));
@@ -313,7 +363,7 @@ async function applyPhotos(review, { pool, runId, log = console.log, progress = 
         // Una foto ya subida antes pudo borrarse de la Biblioteca de medios: se
         // olvidan las que ya no existen, se vuelven a subir y se asigna otra vez.
         const text = error.response?.data?.message || error.message || '';
-        if (!pool || !/#\d+/.test(text) || !/imagen|image/i.test(text)) throw error;
+        if (!pool || item.source === 'media' || !/#\d+/.test(text) || !/imagen|image/i.test(text)) throw error;
         const missing = [];
         for (const id of new Set(mediaIds)) if (!(await mediaExists(id))) missing.push(id);
         if (!missing.length) throw error;
@@ -408,7 +458,11 @@ function publicPhotos(review, { withResults = false } = {}) {
       sku: i.label,
       name: i.name,
       attributes: i.target.kind === 'color' ? `${i.target.variations.length} variación(es)` : null,
-      changes: [{ field: i.target.kind === 'color' || i.type === TYPE.variation ? 'Fotos de la variación' : 'Galería', from: null, to: i.files.map((f) => f.name).join(', ') }],
+      changes: [{
+        field: `${i.target.kind === 'color' || i.type === TYPE.variation ? 'Fotos de la variación' : 'Galería'}${i.source === 'media' ? ' (ya en Medios)' : ''}`,
+        from: null,
+        to: i.files.map((f) => f.name).join(', '),
+      }],
       conflicts: [],
       skipped: [],
       errors: i.errors,
@@ -437,4 +491,4 @@ function publicPhotos(review, { withResults = false } = {}) {
   };
 }
 
-module.exports = { reviewPhotos, applyPhotos, publicPhotos, donePath, buildTargets, checkSku };
+module.exports = { reviewPhotos, applyPhotos, publicPhotos, donePath, buildTargets, checkSku, findInMedia };

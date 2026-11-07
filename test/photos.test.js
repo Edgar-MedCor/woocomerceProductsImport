@@ -1,7 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const config = require('../src/config');
-const { buildTargets, donePath } = require('../src/commands/photos');
+const { buildTargets, donePath, findInMedia } = require('../src/commands/photos');
+const media = require('../src/woo/media');
 const { skuCandidates, scanPhotos } = require('../src/photos/scan');
 const { TYPE, baseCatalog, excelFrom, addRow } = require('./helpers');
 
@@ -129,4 +130,48 @@ test('Al mover a subidas se cambia el prefijo F.S. por S. en cada nivel', () => 
     `${config.photos.donePath}/S. Ropa Dama/S. Bottoms Dama/S. Pantalon Dama`,
   );
   assert.equal(donePath('.'), config.photos.donePath);
+});
+
+// ---------- Fotos que ya están en Medios ----------
+const U = 'https://tienda.test/wp-content/uploads/2026/03/';
+function mediaLibrary(files) {
+  media._mediaIndex.byCode.clear();
+  files.forEach(([id, name]) => media._addToIndex({ id, source_url: U + name }));
+  return media.mediaFor;
+}
+
+test('Medios: lee SKU-número del nombre del archivo (copias y -scaled incluidas)', () => {
+  assert.deepEqual(media.parseMediaName(`${U}RC49206004-1.webp`), { code: 'RC49206004', n: 1, ext: 'webp' });
+  assert.deepEqual(media.parseMediaName(`${U}RD49339035-2-1.jpg`), { code: 'RD49339035', n: 2, ext: 'jpg' });
+  assert.deepEqual(media.parseMediaName(`${U}rd45747002-3-scaled.webp`), { code: 'RD45747002', n: 3, ext: 'webp' });
+  assert.equal(media.parseMediaName(`${U}RD42104004.webp`), null); // sin número: no es del formato
+  assert.equal(media.parseMediaName(`${U}foto de vestido.jpg`), null);
+});
+
+test('Medios: una foto por número, en orden; de las copias gana la .webp más reciente', () => {
+  const lookup = mediaLibrary([[10, 'RC49206004-2.jpg'], [11, 'RC49206004-1.jpg'], [12, 'RC49206004-1.webp'], [13, 'RC49206004-1-1.webp'], [14, 'RC49206004-2.webp']]);
+  assert.deepEqual(lookup('rc49206004').map((m) => [m.n, m.id]), [[1, 13], [2, 14]]);
+  assert.deepEqual(lookup('NO-EXISTE'), []);
+});
+
+test('Medios: busca por SKU exacto o por estilo+color; no toca lo que ya tiene foto o carpeta', async () => {
+  const excel = await excelFrom(baseCatalog());
+  const { resolve } = buildTargets(excel.rows);
+  const row = (sku) => excel.rows.find((r) => r.sku === sku);
+  row('RD45747M001').images = `${U}ya-tiene.webp`; // ya tiene foto
+  const lookup = mediaLibrary([
+    [1, 'RD45747002-1.webp'], [2, 'RD45747002-2.webp'], // negro: todas las tallas
+    [3, 'BOL48901OS015-1.webp'], // simple por SKU exacto
+    [4, 'RD45747M001-1.webp'], // tiene foto: no se toca
+    [5, 'RD45747S001-1.webp'], // tiene carpeta en esta revisión: no se toca
+    [6, 'RD45747-1.webp'], // el padre arma su galería con las de sus variaciones
+  ]);
+  const items = findInMedia(excel.rows, resolve, new Set([103]), lookup);
+  const by = Object.fromEntries(items.map((i) => [i.label, i]));
+  assert.deepEqual(Object.keys(by).sort(), ['BOL48901OS015', 'RD45747M002', 'RD45747S002']);
+  assert.deepEqual(by.RD45747S002.files.map((f) => f.mediaId), [1, 2]);
+  assert.equal(by.RD45747S002.target.parentId, 100);
+  assert.equal(by.RD45747S002.source, 'media');
+  assert.deepEqual(by.BOL48901OS015.files.map((f) => f.mediaId), [3]);
+  assert.equal(by.BOL48901OS015.errors.length, 0);
 });

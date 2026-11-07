@@ -13,7 +13,8 @@ async function buildDashboard(pool, { log = () => {} } = {}) {
   let review = null;
   let pendingError = null;
   try {
-    review = await reviewPhotos({ log, links: await loadLinks(pool) });
+    // Sin la búsqueda en Medios: el tablero solo cuenta carpetas pendientes.
+    review = await reviewPhotos({ log, links: await loadLinks(pool), media: false });
   } catch (error) {
     pendingError = error.message;
   }

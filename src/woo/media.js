@@ -56,4 +56,66 @@ async function mediaExists(id) {
   }
 }
 
-module.exports = { uploadMedia, mediaExists };
+// --- Índice de la Biblioteca de medios por nombre de archivo ---
+// Las fotos se nombran SKU-1, SKU-2… (o estilo+color-1 para todas las tallas de un
+// color). El título no sirve para buscar (el panel pone el nombre del producto),
+// así que se lee la lista completa una vez y luego solo las imágenes nuevas.
+
+// "RC49206004-1.webp" -> { code: 'RC49206004', n: 1 }. WordPress agrega "-1", "-2"…
+// a los nombres repetidos ("RD49339035-1-1.webp") y "-scaled" a las fotos grandes.
+function parseMediaName(url) {
+  const file = decodeURIComponent(String(url || '').split('/').pop() || '');
+  const ext = (file.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || '';
+  const base = file.replace(/\.[a-z0-9]+$/i, '').replace(/-scaled$/i, '');
+  const m = base.match(/^([A-Za-z0-9]+)-(\d{1,2})(?:-\d+)?$/);
+  return m ? { code: m[1].toUpperCase(), n: Number(m[2]), ext } : null;
+}
+
+const mediaIndex = { byCode: new Map(), maxId: 0 };
+
+function addToIndex(item) {
+  const parsed = parseMediaName(item.source_url);
+  if (!parsed) return;
+  const byN = mediaIndex.byCode.get(parsed.code) || new Map();
+  byN.set(parsed.n, [...(byN.get(parsed.n) || []), { id: item.id, url: item.source_url, ext: parsed.ext }]);
+  mediaIndex.byCode.set(parsed.code, byN);
+}
+
+// Lee de la más nueva a la más vieja y se detiene al llegar a las que ya conoce.
+async function refreshMediaIndex({ onProgress = () => {} } = {}) {
+  const url = `${config.woo.url().replace(/\/$/, '')}/wp-json/wp/v2/media`;
+  const known = mediaIndex.maxId;
+  let newest = known;
+  let read = 0;
+  for (let page = 1; ; page += 1) {
+    const { data, headers } = await throttle.axiosCall(() => axios.get(url, {
+      params: { per_page: 100, page, orderby: 'id', order: 'desc', media_type: 'image', _fields: 'id,source_url' },
+      headers: { Authorization: authHeader() },
+      httpsAgent,
+      timeout: 120000,
+    }));
+    const fresh = data.filter((m) => m.id > known);
+    fresh.forEach(addToIndex);
+    read += fresh.length;
+    if (data.length) newest = Math.max(newest, data[0].id);
+    onProgress(read, known ? null : Number(headers['x-wp-total']) || null);
+    if (fresh.length < data.length || page >= Number(headers['x-wp-totalpages'] || 1)) break;
+  }
+  mediaIndex.maxId = newest;
+  return read;
+}
+
+// Fotos de un código (SKU o estilo+color), una por número y en orden. Si hay
+// varias copias del mismo número se usa la .webp más reciente.
+function mediaFor(code) {
+  const byN = mediaIndex.byCode.get(String(code || '').trim().toUpperCase());
+  if (!byN) return [];
+  return [...byN.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([n, copies]) => {
+      const best = [...copies].sort((a, b) => (b.ext === 'webp') - (a.ext === 'webp') || b.id - a.id)[0];
+      return { n, id: best.id, url: best.url };
+    });
+}
+
+module.exports = { uploadMedia, mediaExists, parseMediaName, refreshMediaIndex, mediaFor, _mediaIndex: mediaIndex, _addToIndex: addToIndex };
