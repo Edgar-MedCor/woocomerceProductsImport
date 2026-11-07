@@ -175,3 +175,48 @@ test('Medios: busca por SKU exacto o por estilo+color; no toca lo que ya tiene f
   assert.deepEqual(by.BOL48901OS015.files.map((f) => f.mediaId), [3]);
   assert.equal(by.BOL48901OS015.errors.length, 0);
 });
+
+test('Medios: se confirma en la tienda; lo que ya tiene foto (aunque el Excel diga que no) no se toca', async () => {
+  const { mockStore } = require('./helpers');
+  const { withoutPhotosInStore } = require('../src/commands/photos');
+  const catalog = baseCatalog();
+  catalog[0].variations_data[0].image = { id: 77, src: `${U}ya.webp` }; // RD45747S002 ya tiene foto en la tienda
+  mockStore(catalog);
+  const excel = await excelFrom(baseCatalog()); // Excel viejo: nada tiene foto
+  const { resolve } = buildTargets(excel.rows);
+  const lookup = mediaLibrary([[1, 'RD45747002-1.webp'], [3, 'BOL48901OS015-1.webp']]);
+  const left = await withoutPhotosInStore(findInMedia(excel.rows, resolve, new Set(), lookup));
+  assert.deepEqual(left.map((i) => i.label).sort(), ['BOL48901OS015', 'RD45747M002']);
+});
+
+test('Reporte sin fotos: simples y variaciones sin foto con SKU, nombre, inventario y estado', async () => {
+  const ExcelJS = require('exceljs');
+  const store = require('../src/woo/store');
+  const { buildNoPhotosReport } = require('../src/photos/noPhotosReport');
+  const { mockStore } = require('./helpers');
+  const catalog = baseCatalog();
+  catalog[0].variations_data[0].image = { id: 77, src: `${U}ya.webp` };
+  catalog[0].images = [{ id: 77, src: `${U}ya.webp` }];
+  mockStore(catalog);
+  store.fetchProductsWithStock = async () => catalog.map(({ variations_data: v, ...p }) => ({ ...p, variations: (v || []).map((x) => x.id) }));
+  mediaLibrary([[1, 'RD45747001-1.webp']]);
+  const realRefresh = media.refreshMediaIndex;
+  media.refreshMediaIndex = async () => 0;
+  try {
+    const { buffer, summary } = await buildNoPhotosReport();
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer);
+    const rows = [];
+    wb.getWorksheet('Sin fotos').eachRow((r, i) => { if (i > 1) rows.push(r.values.slice(1, 9)); });
+    const bySku = Object.fromEntries(rows.map((r) => [r[0], r]));
+    assert.deepEqual(Object.keys(bySku).sort(), ['BOL48901OS015', 'RD45747M001', 'RD45747M002', 'RD45747S001']);
+    assert.deepEqual(bySku.BOL48901OS015.slice(0, 5), ['BOL48901OS015', 'Bolsa Rafia', 12, 'Publicado', 'Simple']);
+    assert.equal(bySku.RD45747M002[2], 0);
+    assert.equal(bySku.RD45747M002[5], 'RD45747');
+    assert.equal(bySku.RD45747S001[7], 'Sí (estilo+color)');
+    assert.equal(bySku.RD45747M002[7], 'No');
+    assert.equal(summary['Sin foto (total)'], 4);
+  } finally {
+    media.refreshMediaIndex = realRefresh;
+  }
+});

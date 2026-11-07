@@ -12,6 +12,7 @@ const { pool } = require('../db');
 const { requirePermission } = require('../auth');
 const { can, allowedFields, historyTypes } = require('../permissions');
 const dashboard = require('../../photos/dashboard');
+const { buildNoPhotosReport } = require('../../photos/noPhotosReport');
 const { loadLinks, saveLink, removeLink } = require('../../photos/links');
 const orphans = require('../../report/orphans');
 const { TYPE } = require('../../push/fields');
@@ -52,6 +53,33 @@ router.get('/photos/dashboard', requirePermission('photos'), (_req, res) => {
 router.post('/photos/dashboard/refresh', requirePermission('photos'), (_req, res) => {
   dashboard.refreshDashboard(pool);
   res.status(202).json({ ok: true, ...dashboard.getDashboard() });
+});
+
+// ---------- Reporte descargable de productos sin fotos ----------
+// Se genera en segundo plano (lee toda la tienda) y se guarda el último en memoria.
+let noPhotosReport = null;
+
+router.post('/photos/no-photos-report', requirePermission('photos'), async (req, res, next) => {
+  try {
+    const job = await jobs.start('photos-report', req.user, async ({ runId, log, progress }) => {
+      const report = await buildNoPhotosReport({ log, progress });
+      noPhotosReport = { runId, buffer: report.buffer };
+      return { summary: report.summary, webUrl: `/api/sync/photos/no-photos-report/${runId}` };
+    });
+    res.status(202).json({ ok: true, job });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/photos/no-photos-report/:runId', requirePermission('photos'), (req, res) => {
+  if (!noPhotosReport || String(noPhotosReport.runId) !== String(req.params.runId)) {
+    return res.status(404).json({ ok: false, message: 'Ese reporte ya no está disponible. Vuelve a generarlo.' });
+  }
+  const date = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="productos-sin-fotos-${date}.xlsx"`);
+  res.send(Buffer.from(noPhotosReport.buffer));
 });
 
 // ---------- Relacionar a mano una carpeta cuyo nombre no coincide con ningún SKU ----------

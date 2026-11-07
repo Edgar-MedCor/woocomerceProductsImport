@@ -144,6 +144,21 @@ function findInMedia(rows, resolve, covered, lookup = mediaFor) {
   return items;
 }
 
+// Deja solo los que en la tienda (no en el Excel) siguen sin foto principal.
+async function withoutPhotosInStore(items) {
+  const bare = new Set();
+  const simples = items.filter((i) => i.type !== TYPE.variation).map((i) => i.target.id);
+  for (let i = 0; i < simples.length; i += 100) {
+    for (const p of await store.fetchProductsByIds(simples.slice(i, i + 100))) if (!(p.images || []).length) bare.add(p.id);
+  }
+  const byParent = new Map();
+  for (const i of items.filter((x) => x.type === TYPE.variation)) byParent.set(i.target.parentId, [...(byParent.get(i.target.parentId) || []), i.target.id]);
+  await withConcurrency([...byParent], config.photos.concurrency, async ([parentId, ids]) => {
+    for (const v of await store.fetchVariationsByIds(parentId, ids)) if (!v.image?.id) bare.add(v.id);
+  });
+  return items.filter((i) => bare.has(i.target.id));
+}
+
 const describe = (t) => ({
   label: t.kind === 'color' ? `${t.sku} / ${t.color}` : t.sku,
   name: t.name || null,
@@ -211,7 +226,11 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
     const read = await refreshMediaIndex({ onProgress: (n, total) => progress(n, total, 'Imágenes de Medios leídas') });
     if (read) log(`${read} imagen(es) nuevas leídas de Medios.`);
     const covered = new Set(items.flatMap((i) => (i.target.kind === 'color' ? i.target.variations.map((v) => v.id) : [i.target.id])).filter(Boolean));
-    fromMedia = findInMedia(rows, resolve, covered);
+    const candidates = findInMedia(rows, resolve, covered);
+    // El Excel puede ser de antes de que llegaran fotos: se confirma en la tienda.
+    if (candidates.length) log(`Confirmando en la tienda que ${candidates.length} producto(s)/variación(es) de verdad no tienen foto...`);
+    fromMedia = await withoutPhotosInStore(candidates);
+    if (candidates.length > fromMedia.length) log(`${candidates.length - fromMedia.length} ya tienen foto en la tienda (el Excel era de antes): no se tocan.`);
     items.push(...fromMedia);
   }
 
@@ -491,4 +510,4 @@ function publicPhotos(review, { withResults = false } = {}) {
   };
 }
 
-module.exports = { reviewPhotos, applyPhotos, publicPhotos, donePath, buildTargets, checkSku, findInMedia };
+module.exports = { reviewPhotos, applyPhotos, publicPhotos, donePath, buildTargets, checkSku, findInMedia, withoutPhotosInStore };

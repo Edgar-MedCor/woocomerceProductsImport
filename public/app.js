@@ -281,6 +281,7 @@ const TYPE_LABEL = {
   photos: 'Subir fotos',
   undo: 'Deshacer push',
   'photos-link': 'Relacionar carpeta',
+  'photos-report': 'Reporte de productos sin fotos',
   'attrs-review': 'Revisar atributos',
   'attrs-fix': 'Corregir atributos',
 };
@@ -406,6 +407,7 @@ const startJob = (path, button = null) => launch(button, () => api(path, { metho
 $('#pullBtn').addEventListener('click', (e) => startPull(false, e.currentTarget));
 $('#reviewBtn').addEventListener('click', (e) => startJob('/sync/review', e.currentTarget));
 $('#photosReviewBtn').addEventListener('click', (e) => startJob('/sync/photos/review', e.currentTarget));
+$('#noPhotosReportBtn').addEventListener('click', (e) => startJob('/sync/photos/no-photos-report', e.currentTarget));
 $('#attrsReviewBtn').addEventListener('click', (e) => startJob('/sync/attributes/review', e.currentTarget));
 $('#pushBtn').addEventListener('click', async () => {
   const s = lastPlanJob?.details?.summary || {};
@@ -476,6 +478,7 @@ function notifyJobEnd(job) {
     undo: 'La tienda quedó como antes de ese push.',
     'attrs-review': pending ? 'Revisa la lista y confirma para corregir los atributos.' : 'Todos los productos variables ya cumplen la regla.',
     'attrs-fix': 'Los atributos ya están corregidos. Haz "Traer de la tienda" para poner el Excel al día.',
+    'photos-report': 'Descárgalo con el botón "Descargar reporte (Excel)".',
   }[job.type] || '';
   toast(`${label}: terminado. ${next}`.trim(), 'success');
 }
@@ -511,7 +514,10 @@ function renderJob(job) {
   const card = $('#jobCard');
   card.classList.toggle('hidden', !job);
   const running = job?.status === 'running';
-  if (activeLane === 'photos') $('#photosReviewBtn').disabled = running;
+  if (activeLane === 'photos') {
+    $('#photosReviewBtn').disabled = running;
+    $('#noPhotosReportBtn').disabled = running;
+  }
   else {
     $('#pullBtn').disabled = running;
     $('#reviewBtn').disabled = running;
@@ -536,6 +542,9 @@ function renderJob(job) {
   $('#jobError').classList.toggle('hidden', !job.error);
   $('#jobError').textContent = job.error || '';
   $('#forcePullBtn').classList.toggle('hidden', !(job.errorCode === 'EXCEL_MODIFIED' && can('pull:force')));
+  const report = job.type === 'photos-report' && job.status === 'success' && job.webUrl;
+  $('#jobDownloadLink').classList.toggle('hidden', !report);
+  if (report) $('#jobDownloadLink').href = job.webUrl;
 
   const summary = $('#jobSummary');
   summary.classList.toggle('hidden', !job.summary);
