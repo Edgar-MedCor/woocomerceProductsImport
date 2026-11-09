@@ -216,13 +216,32 @@ router.get('/stock-price/settings', requirePermission('push'), async (_req, res,
   }
 });
 
+// El archivo llega en partes (base64) para no chocar con el límite de tamaño de
+// nginx en el servidor (1 MB por envío); al llegar la última se arma y se lee.
+const uploadParts = new Map(); // `${userId}:${kind}` -> { uploadId, total, parts, at }
+const MAX_PARTS = 80; // 80 x 512 KB ≈ 40 MB en base64
+const MAX_PART_LENGTH = 600 * 1024;
+
 router.post('/stock-price/upload', requirePermission('push'), async (req, res, next) => {
   try {
-    const { kind, data } = req.body || {};
-    if (!['prices', 'stock'].includes(kind) || typeof data !== 'string' || !data) {
-      return res.status(400).json({ ok: false, message: 'Falta el archivo.' });
+    const { kind, data, uploadId, index = 0, total = 1 } = req.body || {};
+    if (!['prices', 'stock'].includes(kind) || typeof data !== 'string' || !data || data.length > MAX_PART_LENGTH || !/^[A-Za-z0-9+/=]+$/.test(data)) {
+      return res.status(400).json({ ok: false, message: 'Falta el archivo o llegó dañado.' });
     }
-    const buffer = Buffer.from(data, 'base64');
+    if (!Number.isInteger(index) || !Number.isInteger(total) || total < 1 || total > MAX_PARTS || index < 0 || index >= total
+      || typeof uploadId !== 'string' || !/^[a-z0-9-]{6,40}$/i.test(uploadId)) {
+      return res.status(400).json({ ok: false, message: 'El archivo es demasiado grande o la carga llegó incompleta. Vuelve a elegirlo.' });
+    }
+    const key = `${req.user.id}:${kind}`;
+    let upload = uploadParts.get(key);
+    if (!upload || upload.uploadId !== uploadId) {
+      upload = { uploadId, total, parts: new Array(total), at: Date.now() };
+      uploadParts.set(key, upload);
+    }
+    upload.parts[index] = data;
+    if (upload.parts.filter(Boolean).length < upload.total) return res.json({ ok: true, received: index + 1, total });
+    uploadParts.delete(key);
+    const buffer = Buffer.from(upload.parts.join(''), 'base64');
     const entry = stockUploads.get(String(req.user.id)) || {};
     if (kind === 'prices') {
       const parsed = await stockFiles.parsePrices(buffer);

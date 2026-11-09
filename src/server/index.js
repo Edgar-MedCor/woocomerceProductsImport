@@ -37,7 +37,7 @@ app.use((req, res, next) => {
 
 // Los archivos de precios e inventario (Excel de varios MB) llegan en base64 por JSON.
 const jsonSmall = express.json({ limit: '1mb' });
-const jsonFiles = express.json({ limit: '30mb' });
+const jsonFiles = express.json({ limit: '1mb' }); // llegan en partes de 512 KB (ver /stock-price/upload)
 app.use((req, res, next) => (req.path === '/api/sync/stock-price/upload' ? jsonFiles : jsonSmall)(req, res, next));
 app.use(session({
   name: 'wayan.sid',

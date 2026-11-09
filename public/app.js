@@ -1261,7 +1261,17 @@ async function uploadStockFile(kind, input, status) {
   input.disabled = true;
   try {
     await loadStockSettings();
-    const data = await api('/sync/stock-price/upload', { method: 'POST', body: { kind, data: await fileToBase64(file) } });
+    // En partes de 512 KB: el servidor web no acepta envíos de más de 1 MB.
+    const base64 = await fileToBase64(file);
+    const CHUNK = 512 * 1024;
+    const total = Math.max(1, Math.ceil(base64.length / CHUNK));
+    const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    let data;
+    for (let index = 0; index < total; index += 1) {
+      status.replaceChildren(spinner(), total > 1 ? ` Subiendo ${file.name}: ${Math.round(((index + 1) / total) * 100)}%` : ` Leyendo ${file.name}…`);
+      data = await api('/sync/stock-price/upload', { method: 'POST', quiet: true, body: { kind, uploadId, index, total, data: base64.slice(index * CHUNK, (index + 1) * CHUNK) } });
+    }
+    status.replaceChildren(spinner(), ` Revisando ${file.name}…`);
     if (kind === 'prices') {
       stock.prices = true;
       status.textContent = `✔ ${file.name}: ${data.summary.claves.toLocaleString('es-MX')} claves${data.summary.sinPrecio ? ` (${data.summary.sinPrecio} sin precio)` : ''}`;
