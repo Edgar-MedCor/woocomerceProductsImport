@@ -229,12 +229,14 @@
       <section data-view="users" class="hidden">
         <div class="card">
           <h2>Usuarios</h2>
-          <table class="table">
-            <thead><tr><th>Nombre</th><th>Usuario</th><th>Perfil</th><th>Permisos extra</th><th>Último acceso</th><th>Estado</th><th></th></tr></thead>
-            <tbody id="usersBody"></tbody>
-          </table>
+          <div class="users-wrap">
+            <table class="table users-table">
+              <thead><tr><th>Nombre</th><th>Usuario</th><th>Perfil</th><th>Permisos extra</th><th>Último acceso</th><th>Estado</th><th><span class="sr-only">Acciones</span></th></tr></thead>
+              <tbody id="usersBody"></tbody>
+            </table>
+          </div>
         </div>
-        <form id="newUserForm" class="card form-inline" novalidate>
+        <form id="newUserForm" class="card form-inline new-user" novalidate>
           <h2>Nuevo usuario</h2>
           <label class="field">Nombre <input name="displayName" autocomplete="off"><span class="field-error" data-for="displayName"></span></label>
           <label class="field">Usuario <input name="username" autocomplete="off"><span class="field-error" data-for="username"></span></label>
@@ -243,10 +245,6 @@
           <button type="submit">Crear</button>
           <p id="newUserMsg" class="field-error" role="alert"></p>
         </form>
-        <div class="card">
-          <h2>Qué puede hacer cada perfil</h2>
-          <ul id="rolesHelp" class="muted"></ul>
-        </div>
       </section>
 
       <!-- Conexiones -->

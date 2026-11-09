@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const config = require('../src/config');
-const { buildTargets, donePath, findInMedia } = require('../src/commands/photos');
+const { buildTargets, donePath, mediaItems } = require('../src/commands/photos');
 const media = require('../src/woo/media');
 const { skuCandidates, scanPhotos } = require('../src/photos/scan');
 const { TYPE, baseCatalog, excelFrom, addRow } = require('./helpers');
@@ -154,51 +154,46 @@ test('Medios: una foto por número, en orden; de las copias gana la .webp más r
   assert.deepEqual(lookup('NO-EXISTE'), []);
 });
 
-test('Medios: busca por SKU exacto o por estilo+color; no toca lo que ya tiene foto o carpeta', async () => {
-  const excel = await excelFrom(baseCatalog());
-  const { resolve } = buildTargets(excel.rows);
-  const row = (sku) => excel.rows.find((r) => r.sku === sku);
-  row('RD45747M001').images = `${U}ya-tiene.webp`; // ya tiene foto
-  const lookup = mediaLibrary([
-    [1, 'RD45747002-1.webp'], [2, 'RD45747002-2.webp'], // negro: todas las tallas
-    [3, 'BOL48901OS015-1.webp'], // simple por SKU exacto
-    [4, 'RD45747M001-1.webp'], // tiene foto: no se toca
-    [5, 'RD45747S001-1.webp'], // tiene carpeta en esta revisión: no se toca
-    [6, 'RD45747-1.webp'], // el padre arma su galería con las de sus variaciones
-  ]);
-  const items = findInMedia(excel.rows, resolve, new Set([103]), lookup);
-  const by = Object.fromEntries(items.map((i) => [i.label, i]));
-  assert.deepEqual(Object.keys(by).sort(), ['BOL48901OS015', 'RD45747M002', 'RD45747S002']);
-  assert.deepEqual(by.RD45747S002.files.map((f) => f.mediaId), [1, 2]);
-  assert.equal(by.RD45747S002.target.parentId, 100);
-  assert.equal(by.RD45747S002.source, 'media');
-  assert.deepEqual(by.BOL48901OS015.files.map((f) => f.mediaId), [3]);
-  assert.equal(by.BOL48901OS015.errors.length, 0);
-});
-
-test('Medios: se confirma en la tienda; lo que ya tiene foto (aunque el Excel diga que no) no se toca', async () => {
-  const { mockStore } = require('./helpers');
-  const { withoutPhotosInStore } = require('../src/commands/photos');
-  const catalog = baseCatalog();
-  catalog[0].variations_data[0].image = { id: 77, src: `${U}ya.webp` }; // RD45747S002 ya tiene foto en la tienda
-  mockStore(catalog);
-  const excel = await excelFrom(baseCatalog()); // Excel viejo: nada tiene foto
-  const { resolve } = buildTargets(excel.rows);
-  const lookup = mediaLibrary([[1, 'RD45747002-1.webp'], [3, 'BOL48901OS015-1.webp']]);
-  const left = await withoutPhotosInStore(findInMedia(excel.rows, resolve, new Set(), lookup));
-  assert.deepEqual(left.map((i) => i.label).sort(), ['BOL48901OS015', 'RD45747M002']);
-});
-
-test('Reporte sin fotos: simples y variaciones sin foto con SKU, nombre, inventario y estado', async () => {
-  const ExcelJS = require('exceljs');
+// Tienda simulada para "lo que se ve sin foto": el pantalón (variable) y la bolsa (simple), publicados.
+function shopWithoutPhotos(edit = () => {}) {
   const store = require('../src/woo/store');
-  const { buildNoPhotosReport } = require('../src/photos/noPhotosReport');
   const { mockStore } = require('./helpers');
   const catalog = baseCatalog();
-  catalog[0].variations_data[0].image = { id: 77, src: `${U}ya.webp` };
-  catalog[0].images = [{ id: 77, src: `${U}ya.webp` }];
+  edit(catalog);
   mockStore(catalog);
   store.fetchProductsWithStock = async () => catalog.map(({ variations_data: v, ...p }) => ({ ...p, variations: (v || []).map((x) => x.id) }));
+  return catalog;
+}
+
+test('Sin foto = producto sin imagen principal (cualquier estado menos papelera); variaciones de un producto con foto no cuentan', async () => {
+  const { findShownWithoutPhotos } = require('../src/photos/missing');
+  shopWithoutPhotos((c) => { c[0].images = [{ id: 9, src: `${U}p.webp` }]; });
+  assert.deepEqual((await findShownWithoutPhotos()).map((p) => p.sku), ['BOL48901OS015']);
+  shopWithoutPhotos((c) => { c[1].status = 'pending'; }); // los nuevos sin foto quedan "En revisión": sí cuentan
+  assert.deepEqual((await findShownWithoutPhotos()).map((p) => p.sku).sort(), ['BOL48901OS015', 'RD45747']);
+  shopWithoutPhotos((c) => { c[1].status = 'trash'; });
+  assert.deepEqual((await findShownWithoutPhotos()).map((p) => p.sku), ['RD45747']);
+});
+
+test('Revisar fotos (Medios): simple por SKU; variable por sus variaciones sin foto (estilo+color); respeta carpetas', async () => {
+  const { findShownWithoutPhotos } = require('../src/photos/missing');
+  shopWithoutPhotos((c) => { c[0].variations_data[2].image = { id: 9, src: `${U}x.webp` }; }); // RD45747S001 ya tiene foto
+  const bare = await findShownWithoutPhotos();
+  const lookup = mediaLibrary([[1, 'RD45747002-1.webp'], [2, 'RD45747002-2.webp'], [3, 'BOL48901OS015-1.webp'], [4, 'RD45747001-1.webp']]);
+  const items = mediaItems(bare, new Set([102]), lookup); // RD45747M002 ya tiene carpeta
+  const by = Object.fromEntries(items.map((i) => [i.label, i]));
+  assert.deepEqual(Object.keys(by).sort(), ['BOL48901OS015', 'RD45747M001', 'RD45747S002']);
+  assert.deepEqual(by.RD45747S002.files.map((f) => f.mediaId), [1, 2]);
+  assert.equal(by.RD45747S002.target.parentId, 100);
+  assert.equal(by.RD45747S002.type, TYPE.variation);
+  assert.equal(by.BOL48901OS015.type, TYPE.simple);
+  assert.equal(new Set(items.map((i) => i.productId)).size, 2); // 2 productos sin foto
+});
+
+test('Reporte sin fotos: un renglón por producto publicado sin foto, con SKU, nombre, inventario y estado', async () => {
+  const ExcelJS = require('exceljs');
+  const { buildNoPhotosReport } = require('../src/photos/noPhotosReport');
+  shopWithoutPhotos();
   mediaLibrary([[1, 'RD45747001-1.webp']]);
   const realRefresh = media.refreshMediaIndex;
   media.refreshMediaIndex = async () => 0;
@@ -207,15 +202,16 @@ test('Reporte sin fotos: simples y variaciones sin foto con SKU, nombre, inventa
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buffer);
     const rows = [];
-    wb.getWorksheet('Sin fotos').eachRow((r, i) => { if (i > 1) rows.push(r.values.slice(1, 9)); });
+    wb.getWorksheet('Sin fotos').eachRow((r, i) => { if (i > 1) rows.push(r.values.slice(1, 8)); });
     const bySku = Object.fromEntries(rows.map((r) => [r[0], r]));
-    assert.deepEqual(Object.keys(bySku).sort(), ['BOL48901OS015', 'RD45747M001', 'RD45747M002', 'RD45747S001']);
+    assert.deepEqual(Object.keys(bySku).sort(), ['BOL48901OS015', 'RD45747']);
     assert.deepEqual(bySku.BOL48901OS015.slice(0, 5), ['BOL48901OS015', 'Bolsa Rafia', 12, 'Publicado', 'Simple']);
-    assert.equal(bySku.RD45747M002[2], 0);
-    assert.equal(bySku.RD45747M002[5], 'RD45747');
-    assert.equal(bySku.RD45747S001[7], 'Sí (estilo+color)');
-    assert.equal(bySku.RD45747M002[7], 'No');
-    assert.equal(summary['Sin foto (total)'], 4);
+    assert.equal(bySku.RD45747[2], 15); // suma del inventario de sus variaciones
+    assert.equal(bySku.RD45747[4], 'Variable (4 variaciones)');
+    assert.match(bySku.RD45747[6], /^Sí: fotos en Medios para 2 de 4/);
+    assert.match(bySku.BOL48901OS015[6], /^No/);
+    assert.equal(summary['Productos sin foto'], 2);
+    assert.equal(summary['Los arregla "Revisar fotos" (Medios o galería del padre)'], 1);
   } finally {
     media.refreshMediaIndex = realRefresh;
   }

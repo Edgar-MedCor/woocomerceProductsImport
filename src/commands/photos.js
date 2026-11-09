@@ -11,6 +11,7 @@ const onedrive = require('../storage/onedrive');
 const store = require('../woo/store');
 const { uploadMedia, mediaExists, refreshMediaIndex, mediaFor } = require('../woo/media');
 const { readWorkbook } = require('../excel/reader');
+const { findShownWithoutPhotos, photoSources } = require('../photos/missing');
 const { scanPhotos } = require('../photos/scan');
 const { prepareImage } = require('../photos/image');
 const { TYPE, isBlank } = require('../push/fields');
@@ -104,59 +105,43 @@ async function loadTargets() {
   const excelBuffer = await onedrive.downloadFile(config.excelPath());
   if (!excelBuffer) throw new Error('No existe el Excel en OneDrive. Haz primero "Traer de la tienda".');
   const { rows } = await readWorkbook(excelBuffer);
-  return { ...buildTargets(rows), rows };
+  return buildTargets(rows);
 }
 
 /**
- * Productos y variaciones del Excel sin fotos (y sin carpeta en esta revisión)
- * cuyas fotos ya están en la Biblioteca de medios con el nombre SKU-1, SKU-2…
- * o estilo+color-1… (las de todas las tallas de un color). No se sube nada:
- * solo se asignan. `covered`: IDs que ya reciben fotos de una carpeta.
+ * Lo que se ve sin foto en la tienda (productos publicados sin foto, ver
+ * photos/missing.js) cuyas fotos ya están en la Biblioteca de medios con el
+ * nombre SKU-1, SKU-2… o estilo+color-1… No se sube nada: solo se asignan.
+ * Simple: a él. Variable: a sus variaciones sin foto (y luego se arma la galería
+ * del padre). `covered`: IDs que ya reciben fotos de una carpeta.
  */
-function findInMedia(rows, resolve, covered, lookup = mediaFor) {
+function mediaItems(bare, covered, lookup = mediaFor) {
   const items = [];
-  for (const r of rows) {
-    if (isBlank(r.id) || isBlank(r.sku) || !isBlank(r.images)) continue;
-    if (r.type !== TYPE.simple && r.type !== TYPE.variation) continue; // la galería del padre se arma de sus variaciones
-    if (covered.has(Number(r.id))) continue;
-    const sku = key(r.sku);
-    const m = sku.match(SKU_PARTS);
-    const code = [sku, m && m[1] + m[3]].filter(Boolean).find((c) => lookup(c).length);
-    if (!code) continue;
-    const target = resolve(sku);
-    if (!target || target.kind !== 'product' || !target.id) continue;
-    const media = lookup(code);
-    items.push({
-      source: 'media',
-      path: `Medios/${code}`,
-      target,
-      label: target.sku,
-      name: target.name,
-      type: target.type,
-      folder: null,
-      parentSkuFolder: null,
-      linked: null,
-      files: media.map((f) => ({ name: decodeURIComponent(f.url.split('/').pop()), mediaId: f.id })),
-      errors: target.type === TYPE.variation && !target.parentId ? ['No se encontró el producto padre de esta variación en el Excel.'] : [],
-      warnings: [`Fotos que ya están en Medios (${code}-1…): no se sube nada, solo se asignan.`],
-    });
+  for (const p of bare) {
+    const isVariable = p.type === 'variable';
+    for (const src of photoSources(p, lookup).media) {
+      if (covered.has(src.id)) continue;
+      const target = isVariable
+        ? { kind: 'product', sku: src.sku, id: src.id, type: TYPE.variation, parentId: p.id, name: p.name }
+        : { kind: 'product', sku: p.sku, id: p.id, type: TYPE.simple, name: p.name };
+      items.push({
+        source: 'media',
+        productId: p.id,
+        path: `Medios/${src.code}`,
+        target,
+        label: target.sku,
+        name: target.name,
+        type: target.type,
+        folder: null,
+        parentSkuFolder: null,
+        linked: null,
+        files: src.files.map((m) => ({ name: decodeURIComponent(m.url.split('/').pop()), mediaId: m.id })),
+        errors: [],
+        warnings: [`Fotos que ya están en Medios (${src.code}-1…): no se sube nada, solo se asignan.`],
+      });
+    }
   }
   return items;
-}
-
-// Deja solo los que en la tienda (no en el Excel) siguen sin foto principal.
-async function withoutPhotosInStore(items) {
-  const bare = new Set();
-  const simples = items.filter((i) => i.type !== TYPE.variation).map((i) => i.target.id);
-  for (let i = 0; i < simples.length; i += 100) {
-    for (const p of await store.fetchProductsByIds(simples.slice(i, i + 100))) if (!(p.images || []).length) bare.add(p.id);
-  }
-  const byParent = new Map();
-  for (const i of items.filter((x) => x.type === TYPE.variation)) byParent.set(i.target.parentId, [...(byParent.get(i.target.parentId) || []), i.target.id]);
-  await withConcurrency([...byParent], config.photos.concurrency, async ([parentId, ids]) => {
-    for (const v of await store.fetchVariationsByIds(parentId, ids)) if (!v.image?.id) bare.add(v.id);
-  });
-  return items.filter((i) => bare.has(i.target.id));
 }
 
 const describe = (t) => ({
@@ -184,7 +169,7 @@ async function checkSku(sku) {
  */
 async function reviewPhotos({ log = console.log, progress = () => {}, links = new Map(), media = true } = {}) {
   log('Leyendo los SKUs del Excel...');
-  const { resolve, resolveChild, rows } = await loadTargets();
+  const { resolve, resolveChild } = await loadTargets();
 
   log(`Recorriendo "${config.photos.pendingPath}" en OneDrive...`);
   const scan = await scanPhotos(config.photos.pendingPath, resolve, resolveChild, {
@@ -219,18 +204,17 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
     items.push(item);
   }
 
-  // Lo que no tiene foto ni carpeta: se busca en la Biblioteca de medios por nombre de archivo.
+  // Lo que se ve sin foto en la tienda: se buscan sus fotos en Medios por nombre de archivo.
   let fromMedia = [];
+  let bare = null;
   if (media) {
-    log('Buscando en Medios las fotos de los productos que no tienen (SKU-1, SKU-2…)...');
+    log('Buscando en la tienda los productos publicados sin foto...');
+    bare = await findShownWithoutPhotos({ progress });
+    log(`${bare.length} producto(s) publicados sin foto. Buscando sus fotos en Medios (SKU-1, SKU-2…)...`);
     const read = await refreshMediaIndex({ onProgress: (n, total) => progress(n, total, 'Imágenes de Medios leídas') });
     if (read) log(`${read} imagen(es) nuevas leídas de Medios.`);
     const covered = new Set(items.flatMap((i) => (i.target.kind === 'color' ? i.target.variations.map((v) => v.id) : [i.target.id])).filter(Boolean));
-    const candidates = findInMedia(rows, resolve, covered);
-    // El Excel puede ser de antes de que llegaran fotos: se confirma en la tienda.
-    if (candidates.length) log(`Confirmando en la tienda que ${candidates.length} producto(s)/variación(es) de verdad no tienen foto...`);
-    fromMedia = await withoutPhotosInStore(candidates);
-    if (candidates.length > fromMedia.length) log(`${candidates.length - fromMedia.length} ya tienen foto en la tienda (el Excel era de antes): no se tocan.`);
+    fromMedia = mediaItems(bare, covered);
     items.push(...fromMedia);
   }
 
@@ -246,7 +230,11 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
   // falló en una subida anterior): se les arma también, sin subir nada nuevo.
   log('Buscando productos padre sin foto...');
   const uploading = new Set(toUpload.filter((i) => i.target.kind === 'color' || i.type === TYPE.variation).map((i) => i.target.parentId));
-  const parentGalleries = (await findParentsWithoutPhoto()).filter((p) => !uploading.has(p.id));
+  // Con la búsqueda en Medios ya se tienen los productos sin foto: no se vuelve a leer la tienda.
+  const withoutPhoto = bare
+    ? bare.filter((p) => p.type === 'variable' && (p.variations_data || []).some((v) => v.image?.id)).map((p) => ({ id: p.id, sku: p.sku, name: p.name }))
+    : await findParentsWithoutPhoto();
+  const parentGalleries = withoutPhoto.filter((p) => !uploading.has(p.id));
 
   return {
     items,
@@ -258,7 +246,7 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
       'Productos/colores con fotos nuevas': toUpload.length,
       'Productos padre sin foto (se arma su galería)': parentGalleries.length,
       'Fotos a subir': toUpload.filter((i) => i.source !== 'media').reduce((n, i) => n + i.files.length, 0),
-      'Productos con fotos encontradas en Medios (no se suben)': fromMedia.filter((i) => !i.errors.length).length,
+      'Productos con fotos encontradas en Medios (no se suben)': new Set(fromMedia.map((i) => i.productId)).size,
       'Con error (no se suben)': items.filter((i) => i.errors.length).length,
       'Para la siguiente tanda': items.filter((i) => i.deferred).length,
       Avisos: scan.warnings.length,
@@ -510,4 +498,4 @@ function publicPhotos(review, { withResults = false } = {}) {
   };
 }
 
-module.exports = { reviewPhotos, applyPhotos, publicPhotos, donePath, buildTargets, checkSku, findInMedia, withoutPhotosInStore };
+module.exports = { reviewPhotos, applyPhotos, publicPhotos, donePath, buildTargets, checkSku, mediaItems };

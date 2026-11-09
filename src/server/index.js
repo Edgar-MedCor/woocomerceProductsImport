@@ -18,6 +18,23 @@ const app = express();
 app.disable('x-powered-by');
 if (IS_PROD) app.set('trust proxy', 1); // detrás de nginx con HTTPS en el VPS
 
+// Cabeceras de seguridad: solo corre el código del propio panel (CSP), nadie lo
+// puede meter en un iframe (clickjacking) y la API no se guarda en caché.
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data: https:",
+    "connect-src 'self'", "font-src 'self'", "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'",
+  ].join('; '));
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  if (IS_PROD) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
 app.use(express.json({ limit: '1mb' }));
 app.use(session({
   name: 'wayan.sid',
@@ -56,9 +73,11 @@ app.use('/api/connections', requirePermission('connections'), require('./routes/
 app.use(express.static(path.join(__dirname, '..', '..', 'public')));
 
 app.use((error, _req, res, _next) => {
-  const status = error.status || 500;
+  const status = error.status || error.statusCode || 500;
   if (status >= 500) console.error(error);
-  res.status(status).json({ ok: false, message: error.message || 'Error interno' });
+  // Los errores de la base de datos traen detalles internos (tablas, consultas): no se muestran.
+  const internal = status >= 500 && (error.severity || /^[0-9A-Z]{5}$/.test(String(error.code || '')));
+  res.status(status).json({ ok: false, message: internal ? 'Error interno del panel. Avisa al administrador.' : (error.message || 'Error interno') });
 });
 
 migrate()

@@ -13,13 +13,30 @@ async function hashPassword(password) {
 }
 
 async function verifyPassword(password, salt, expectedHash) {
-  const derived = await scrypt(password, salt, KEY_LENGTH);
-  const expected = Buffer.from(expectedHash, 'hex');
+  const derived = await scrypt(password, salt || 'sin-sal', KEY_LENGTH);
+  const expected = Buffer.from(expectedHash || '', 'hex');
   return derived.length === expected.length && crypto.timingSafeEqual(derived, expected);
 }
 
+// Cuando el usuario no existe se hace el mismo cálculo que con uno real, para que
+// el tiempo de respuesta no delate qué usuarios existen.
+const DUMMY = { salt: crypto.randomBytes(16).toString('hex'), hash: crypto.randomBytes(KEY_LENGTH).toString('hex') };
+async function checkLogin(user, password) {
+  const ok = await verifyPassword(String(password), user?.password_salt || DUMMY.salt, user?.password_hash || DUMMY.hash);
+  return Boolean(user?.active && !user.deleted_at && ok);
+}
+
+// Cierra las sesiones abiertas de un usuario (menos `exceptSid`, la de quien hace el cambio).
+async function endSessions(userId, exceptSid = null) {
+  await pool.query(
+    "DELETE FROM session WHERE (sess->>'userId') = $1::text AND sid IS DISTINCT FROM $2",
+    [String(userId), exceptSid],
+  ).catch((error) => console.error('No se pudieron cerrar las sesiones:', error.message));
+}
+
 function validatePassword(password) {
-  if (!password || String(password).length < 8) throw new Error('La contraseña debe tener al menos 8 caracteres.');
+  if (typeof password !== 'string' || password.length < 8) throw new Error('La contraseña debe tener al menos 8 caracteres.');
+  if (password.length > 200) throw new Error('La contraseña es demasiado larga (máximo 200 caracteres).');
 }
 
 function validateRole(role) {
@@ -27,7 +44,7 @@ function validateRole(role) {
 }
 
 async function findUserByUsername(username) {
-  const { rows } = await pool.query('SELECT * FROM users WHERE lower(username) = lower($1)', [username]);
+  const { rows } = await pool.query('SELECT * FROM users WHERE lower(username) = lower($1) AND deleted_at IS NULL', [username]);
   return rows[0] || null;
 }
 
@@ -39,6 +56,9 @@ async function findUserById(id) {
 async function createUser({ username, password, displayName, role }) {
   validatePassword(password);
   validateRole(role);
+  if (displayName !== undefined && displayName !== null && (typeof displayName !== 'string' || displayName.length > 80)) {
+    throw new Error('El nombre debe tener máximo 80 caracteres.');
+  }
   if (!/^[a-z0-9._-]{3,40}$/i.test(username || '')) {
     throw new Error('El usuario debe tener de 3 a 40 caracteres: letras, números, punto, guion o guion bajo.');
   }
@@ -79,7 +99,7 @@ async function loadUser(req, _res, next) {
   try {
     if (req.session?.userId) {
       const user = await findUserById(req.session.userId);
-      if (user?.active) req.user = user;
+      if (user?.active && !user.deleted_at) req.user = user;
       else req.session.destroy(() => {});
     }
     next();
@@ -103,6 +123,8 @@ function requirePermission(action) {
 
 module.exports = {
   verifyPassword,
+  checkLogin,
+  endSessions,
   findUserByUsername,
   findUserById,
   createUser,

@@ -80,6 +80,8 @@ async function migrate() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_permissions TEXT[] NOT NULL DEFAULT '{}';
     -- Enlace al producto en la tienda, para consultarlo desde el historial.
     ALTER TABLE change_log ADD COLUMN IF NOT EXISTS url TEXT;
+    -- Usuario eliminado: ya no aparece ni puede entrar, pero el historial conserva quién hizo qué.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
     -- Carpetas de fotos cuyo nombre no coincide con ningún SKU y que alguien
     -- relacionó a mano desde el panel. Se guarda el ID de OneDrive (no el

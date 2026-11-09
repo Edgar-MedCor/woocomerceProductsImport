@@ -1014,10 +1014,6 @@ async function loadUsers({ quiet = false } = {}) {
   const data = await api('/users');
   roles = data.roles;
   $('#roleSelect').replaceChildren(...roles.map((r) => el('option', { value: r.key }, r.label)));
-  $('#rolesHelp').replaceChildren(
-    ...roles.map((r) => el('li', {}, el('strong', {}, `${r.label}: `), describePerms(r.can))),
-    el('li', {}, el('strong', {}, 'Permisos extra: '), `se dan o quitan a cada usuario en la columna "Permisos extra" (${data.grantable.map((g) => g.label.toLowerCase()).join('; ')}). El administrador los tiene todos.`),
-  );
 
   // Casillas de permisos extra: cada cambio guarda la lista completa del usuario.
   const permsCell = (u) => {
@@ -1044,18 +1040,35 @@ async function loadUsers({ quiet = false } = {}) {
       el('td', {}, roleSelect),
       el('td', {}, permsCell(u)),
       el('td', {}, fmtDate(u.lastLoginAt)),
-      el('td', {}, u.active ? 'Activo' : 'Desactivado'),
-      el('td', {},
+      el('td', {}, el('span', { class: `badge ${u.active ? 'success' : 'muted'}` }, u.active ? 'Activo' : 'Desactivado')),
+      el('td', {}, el('div', { class: 'row-actions' },
         el('button', { class: 'small secondary', onclick: (e) => toggleActive(u, e.currentTarget) }, u.active ? 'Desactivar' : 'Activar'),
-        ' ',
-        el('button', { class: 'small secondary', onclick: () => resetPassword(u) }, 'Contraseña')),
+        el('button', { class: 'small secondary', onclick: () => resetPassword(u) }, 'Contraseña'),
+        String(u.id) === String(me.id) ? null : el('button', { class: 'small danger-soft', onclick: (e) => deleteUser(u, e.currentTarget) }, 'Eliminar'))),
     );
   }));
 }
 
-function describePerms(perms) {
-  const labels = { pull: 'traer de la tienda', 'pull:force': 'sobrescribir el Excel', push: 'subir a la tienda', create: 'crear productos', photos: 'subir fotos', undo: 'deshacer el último push', history: 'ver historial', users: 'administrar usuarios', connections: 'administrar conexiones', delete: 'eliminar productos', orphans: 'reporte de variantes sueltas', attributes: 'corregir atributos' };
-  return perms.map((p) => labels[p] || p).join(', ');
+async function deleteUser(user, button) {
+  const ok = await confirmModal({
+    title: 'Eliminar usuario',
+    tone: 'danger',
+    okText: 'Eliminar',
+    body: el('div', {},
+      el('p', {}, `${user.displayName} (${user.username}) ya no aparecerá en la lista ni podrá entrar al panel. Sus sesiones abiertas se cierran al instante.`),
+      el('p', { class: 'muted' }, 'El historial conserva lo que hizo. Su nombre de usuario queda libre para crearlo de nuevo. No se puede deshacer.')),
+  });
+  if (!ok) return;
+  const row = button.closest('tr');
+  row?.classList.add('saving');
+  row?.querySelectorAll('input, select, button').forEach((c) => { c.disabled = true; });
+  try {
+    await api(`/users/${user.id}`, { method: 'DELETE', body: {} });
+    toast(`${user.displayName} quedó eliminado.`, 'success');
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+  await loadUsers({ quiet: true }).catch((error) => toast(error.message, 'error'));
 }
 
 // Guarda un cambio de un usuario. Mientras tanto se desactivan los controles de

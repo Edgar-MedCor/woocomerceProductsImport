@@ -1,13 +1,13 @@
 const express = require('express');
 const { pool } = require('../db');
-const { createUser, setPassword, validateRole, findUserById, publicUser } = require('../auth');
+const { createUser, setPassword, validateRole, findUserById, publicUser, endSessions } = require('../auth');
 const { ROLES, GRANTABLE } = require('../permissions');
 
 const router = express.Router();
 
 router.get('/', async (_req, res, next) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM users ORDER BY active DESC, display_name');
+    const { rows } = await pool.query('SELECT * FROM users WHERE deleted_at IS NULL ORDER BY active DESC, display_name');
     res.json({
       ok: true,
       users: rows.map(publicUser),
@@ -34,9 +34,12 @@ router.post('/', async (req, res, next) => {
 router.patch('/:id', async (req, res, next) => {
   try {
     const target = await findUserById(req.params.id);
-    if (!target) return res.status(404).json({ ok: false, message: 'Usuario no encontrado.' });
+    if (!target || target.deleted_at) return res.status(404).json({ ok: false, message: 'Usuario no encontrado.' });
 
     const { displayName, role, active, password, permissions } = req.body || {};
+    if (displayName !== undefined && (typeof displayName !== 'string' || displayName.length > 80)) {
+      return res.status(400).json({ ok: false, message: 'El nombre debe tener máximo 80 caracteres.' });
+    }
     const isSelf = String(target.id) === String(req.user.id);
     if (isSelf && (active === false || (role && role !== 'admin'))) {
       return res.status(400).json({ ok: false, message: 'No puedes desactivarte ni quitarte el rol de administrador a ti mismo.' });
@@ -56,10 +59,35 @@ router.patch('/:id', async (req, res, next) => {
       [target.id, displayName || null, role || null, typeof active === 'boolean' ? active : null, permissions ? [...new Set(permissions)] : null],
     );
     if (password) await setPassword(target.id, password);
+    // Contraseña restablecida o usuario desactivado: se cierran sus sesiones abiertas.
+    if (password || active === false) await endSessions(target.id, isSelf ? req.sessionID : null);
 
     res.json({ ok: true, user: publicUser(await findUserById(target.id)) });
   } catch (error) {
     error.status ??= 400;
+    next(error);
+  }
+});
+
+// Eliminar: deja de aparecer y no puede volver a entrar. No se borra la fila para
+// que el historial siga diciendo quién hizo cada cambio; su nombre de usuario queda
+// libre para usarse de nuevo.
+router.delete('/:id', async (req, res, next) => {
+  try {
+    const target = await findUserById(req.params.id);
+    if (!target || target.deleted_at) return res.status(404).json({ ok: false, message: 'Usuario no encontrado.' });
+    if (String(target.id) === String(req.user.id)) {
+      return res.status(400).json({ ok: false, message: 'No puedes eliminarte a ti mismo.' });
+    }
+    await pool.query(
+      `UPDATE users SET deleted_at = now(), active = false, extra_permissions = '{}',
+         username = username || '~eliminado-' || id, password_hash = '', password_salt = ''
+       WHERE id = $1`,
+      [target.id],
+    );
+    await endSessions(target.id);
+    res.json({ ok: true });
+  } catch (error) {
     next(error);
   }
 });
