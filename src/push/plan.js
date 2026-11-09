@@ -117,7 +117,7 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, canDel
     item.kind = 'create';
     item.id = null;
     item.base = null;
-    item.replaces = { id: Number(base.id), sku: base.sku ?? null, name: base.name ?? null };
+    item.replaces = { kind: 'product', id: Number(base.id), sku: base.sku ?? null, name: base.name ?? null };
     const status = norm(row.status);
     item.data = { ...row, status: VARIATION_STATUS_SLUG[status] ? row.status : (!status || status === 'publicado' ? VARIATION_STATUS.publish : VARIATION_STATUS.private) };
     if (!canCreate) item.errors.push('Tu perfil no puede crear productos.');
@@ -129,6 +129,27 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, canDel
       }
     }
     item.warnings.push(`Reemplaza al producto simple ID ${base.id}${base.name ? ` ("${base.name}")` : ''}: se crea esta variación con su SKU, precio, inventario y fotos, y el simple se manda a la papelera. Nombre, categorías y descripciones los toma del padre.`);
+  };
+
+  // Variación que cambia de producto (p. ej. juntar los productos de cada color en
+  // uno solo): se crea igual en el producto nuevo y la anterior se manda a la
+  // papelera, liberando su SKU. Woo no permite cambiarle el padre a una variación.
+  const markMove = (item, row, base) => {
+    item.type = TYPE.variation;
+    item.kind = 'create';
+    item.id = null;
+    item.base = null;
+    item.replaces = { kind: 'variation', id: Number(base.id), sku: base.sku ?? null, name: base.name ?? null, parentSku: base.parentSku ?? null };
+    const status = norm(row.status);
+    item.data = { ...row, status: VARIATION_STATUS_SLUG[status] ? row.status : VARIATION_STATUS.publish };
+    if (!canCreate) item.errors.push('Tu perfil no puede crear productos.');
+    if (!canDelete) item.errors.push('Para pasar una variación a otro producto se necesita el permiso de eliminar (la variación anterior se manda a la papelera). Pídeselo al administrador.');
+    for (const key of EDITABLE_ON_UPDATE) {
+      if (key !== 'description' && applies(key, TYPE.variation) && !isBlank(item.data[key])) {
+        item.changes.push({ key, header: COL[key].header, from: null, to: item.data[key] });
+      }
+    }
+    item.warnings.push(`Pasa del producto "${base.parentSku}" al "${row.parentSku}": se crea en el nuevo con su SKU, precio, inventario y fotos, y la variación anterior (ID ${base.id}) se manda a la papelera.`);
   };
 
   // Un ID repetido casi siempre es una fila copiada para crear otra: si se
@@ -170,6 +191,9 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, canDel
       markDelete(item, base);
     } else if (base && base.type === TYPE.simple && typed === TYPE.variation) {
       markConversion(item, row, base);
+    } else if (base && base.type === TYPE.variation && (!typed || typed === TYPE.variation)
+      && !isBlank(row.parentSku) && !same('parentSku', row.parentSku, base.parentSku)) {
+      markMove(item, row, base);
     } else if (base) {
       item.type = base.type === TYPE.simple && typed === TYPE.variable ? TYPE.variable : base.type;
       if (typed && typed !== item.type) {
@@ -369,7 +393,30 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, canDel
   }
 
   // Simples que pasan a ser variación: deben seguir en la tienda y seguir siendo simples.
-  const conversions = items.filter((i) => i.replaces && i.kind === 'create' && !i.errors.length);
+  const conversions = items.filter((i) => i.replaces?.kind === 'product' && i.kind === 'create' && !i.errors.length);
+  // Variaciones que cambian de producto: la anterior y su padre deben seguir en la tienda.
+  const moves = items.filter((i) => i.replaces?.kind === 'variation' && i.kind === 'create' && !i.errors.length);
+  const oldParentIdOf = (sku) => {
+    const row = excel.baseRows.find((b) => b.type === TYPE.variable && skuKey(b.sku) === skuKey(sku));
+    return row && !isBlank(row.id) ? Number(row.id) : null;
+  };
+  const movesByParent = new Map();
+  for (const item of moves) {
+    const parentId = oldParentIdOf(item.replaces.parentSku);
+    if (!parentId) { item.errors.push(`No se encontró el producto "${item.replaces.parentSku}" de esta variación en el Excel. Haz "Traer de la tienda".`); continue; }
+    item.replaces.parentId = parentId;
+    if (!movesByParent.has(parentId)) movesByParent.set(parentId, []);
+    movesByParent.get(parentId).push(item);
+  }
+  for (const [parentId, list] of movesByParent) {
+    const parent = storeProducts.get(parentId) || (await store.fetchProductsByIds([parentId]))[0];
+    const found = parent ? await store.fetchVariationsByIds(parentId, list.map((i) => i.replaces.id)) : [];
+    for (const item of list) {
+      const variation = found.find((v) => v.id === item.replaces.id);
+      if (!variation || variation.status === 'trash') item.errors.push(`La variación ID ${item.replaces.id} ya no existe en la tienda. Haz "Traer de la tienda".`);
+      else Object.assign(item.replaces, { variation, parent });
+    }
+  }
   if (conversions.length) {
     const found = new Map((await store.fetchProductsByIds(conversions.map((i) => i.replaces.id))).map((p) => [p.id, p]));
     for (const item of conversions) {
@@ -465,7 +512,8 @@ async function buildPlan(excel, { allowedFields = null, canCreate = true, canDel
   const summary = {
     'Productos/variaciones nuevos': live.filter((i) => i.kind === 'create' && !i.replaces).length,
     'Productos/variaciones con cambios': live.filter((i) => i.kind === 'update').length,
-    'Simples que pasan a variación': live.filter((i) => i.replaces).length,
+    'Simples que pasan a variación': live.filter((i) => i.replaces?.kind === 'product').length,
+    'Variaciones que pasan a otro producto': live.filter((i) => i.replaces?.kind === 'variation').length,
     'A eliminar (papelera)': live.filter((i) => i.kind === 'delete').length,
     'Ya existían en la tienda (se vinculan)': items.filter((i) => i.kind === 'link' && !i.errors.length).length,
     'Campos a cambiar': live.filter((i) => i.kind === 'update').reduce((n, i) => n + i.changes.length, 0),
@@ -501,7 +549,7 @@ function publicPlan(plan) {
         kind: i.kind,
         type: i.type,
         id: i.id,
-        replaces: i.replaces ? { id: i.replaces.id, sku: i.replaces.sku, name: i.replaces.name } : null,
+        replaces: i.replaces ? { kind: i.replaces.kind, id: i.replaces.id, sku: i.replaces.sku, name: i.replaces.name } : null,
         sku: i.data.sku ?? null,
         name: i.data.name ?? null,
         attributes: ATTRIBUTE_COLUMNS.map((c) => i.data[c.key]).filter((v) => !isBlank(v)).join(' · ') || null,

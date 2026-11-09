@@ -11,7 +11,7 @@ const onedrive = require('../storage/onedrive');
 const store = require('../woo/store');
 const { uploadMedia, mediaExists, refreshMediaIndex, mediaFor } = require('../woo/media');
 const { readWorkbook } = require('../excel/reader');
-const { findShownWithoutPhotos, photoSources } = require('../photos/missing');
+const { findShownWithoutPhotos, findIncompleteParents, parentGalleryFrom, photoSources } = require('../photos/missing');
 const { scanPhotos } = require('../photos/scan');
 const { prepareImage } = require('../photos/image');
 const { TYPE, isBlank } = require('../push/fields');
@@ -207,10 +207,12 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
   // Lo que se ve sin foto en la tienda: se buscan sus fotos en Medios por nombre de archivo.
   let fromMedia = [];
   let bare = null;
+  let products = null;
   if (media) {
-    log('Buscando en la tienda los productos publicados sin foto...');
-    bare = await findShownWithoutPhotos({ progress });
-    log(`${bare.length} producto(s) publicados sin foto. Buscando sus fotos en Medios (SKU-1, SKU-2…)...`);
+    log('Buscando en la tienda los productos sin foto...');
+    products = await store.fetchProductsWithStock();
+    bare = await findShownWithoutPhotos({ products, progress });
+    log(`${bare.length} producto(s) sin foto. Buscando sus fotos en Medios (SKU-1, SKU-2…)...`);
     const read = await refreshMediaIndex({ onProgress: (n, total) => progress(n, total, 'Imágenes de Medios leídas') });
     if (read) log(`${read} imagen(es) nuevas leídas de Medios.`);
     const covered = new Set(items.flatMap((i) => (i.target.kind === 'color' ? i.target.variations.map((v) => v.id) : [i.target.id])).filter(Boolean));
@@ -226,15 +228,13 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
   });
   const toUpload = ready.filter((i) => !i.deferred);
 
-  // Padres variables sin foto cuyas variaciones ya tienen (p. ej. si su galería
-  // falló en una subida anterior): se les arma también, sin subir nada nuevo.
-  log('Buscando productos padre sin foto...');
+  // Padres variables a los que se les arma la galería sin subir nada nuevo: los que
+  // no tienen foto pero sus variaciones sí, y los de un solo color que solo tienen
+  // la foto principal (en la tienda se veía una sola foto hasta escoger una talla).
+  log('Buscando productos padre sin foto o con la galería incompleta...');
   const uploading = new Set(toUpload.filter((i) => i.target.kind === 'color' || i.type === TYPE.variation).map((i) => i.target.parentId));
-  // Con la búsqueda en Medios ya se tienen los productos sin foto: no se vuelve a leer la tienda.
-  const withoutPhoto = bare
-    ? bare.filter((p) => p.type === 'variable' && (p.variations_data || []).some((v) => v.image?.id)).map((p) => ({ id: p.id, sku: p.sku, name: p.name }))
-    : await findParentsWithoutPhoto();
-  const parentGalleries = withoutPhoto.filter((p) => !uploading.has(p.id));
+  const toComplete = products ? await findIncompleteParents({ products, progress }) : await findParentsWithoutPhoto();
+  const parentGalleries = toComplete.filter((p) => !uploading.has(p.id));
 
   return {
     items,
@@ -244,7 +244,7 @@ async function reviewPhotos({ log = console.log, progress = () => {}, links = ne
     summary: {
       'Carpetas revisadas': scan.scannedFolders,
       'Productos/colores con fotos nuevas': toUpload.length,
-      'Productos padre sin foto (se arma su galería)': parentGalleries.length,
+      'Productos padre sin foto o con galería incompleta (se arma su galería)': parentGalleries.length,
       'Fotos a subir': toUpload.filter((i) => i.source !== 'media').reduce((n, i) => n + i.files.length, 0),
       'Productos con fotos encontradas en Medios (no se suben)': new Set(fromMedia.map((i) => i.productId)).size,
       'Con error (no se suben)': items.filter((i) => i.errors.length).length,
@@ -267,12 +267,11 @@ async function findParentsWithoutPhoto() {
   return out;
 }
 
-// Galería del padre: la foto principal de cada variación, en el orden de las
-// variaciones. La primera queda como foto principal del padre y las demás en su galería.
+// Galería del padre a partir de sus variaciones (ver parentGalleryFrom): un solo
+// color = foto principal y galería completa; varios colores = la principal de cada
+// color. La primera queda como foto principal del padre y las demás en su galería.
 async function buildParentGallery(parentId) {
-  const variations = (await store.fetchAllVariations(parentId))
-    .sort((a, b) => (a.menu_order ?? 0) - (b.menu_order ?? 0) || a.id - b.id);
-  const imageIds = [...new Set(variations.map((v) => v.image?.id).filter(Boolean))];
+  const imageIds = parentGalleryFrom(await store.fetchAllVariations(parentId));
   if (!imageIds.length) return 0;
   // Guardar las mismas fotos es idempotente: se reintenta si la tienda pide esperar (429).
   await store.request('put', `products/${parentId}`, { images: imageIds.map((id) => ({ id })) });
@@ -482,11 +481,11 @@ function publicPhotos(review, { withResults = false } = {}) {
       sku: p.sku,
       name: p.name,
       attributes: null,
-      changes: [{ field: 'Galería del padre', from: null, to: 'Foto principal y galería con la primera foto de cada variación' }],
+      changes: [{ field: 'Galería del padre', from: null, to: p.photos ? `${p.photos} foto(s) tomadas de sus variaciones` : 'Fotos tomadas de sus variaciones' }],
       conflicts: [],
       skipped: [],
       errors: [],
-      warnings: ['No tiene foto, pero sus variaciones sí. No se sube nada nuevo.'],
+      warnings: [p.reason || 'No tiene foto, pero sus variaciones sí. No se sube nada nuevo.'],
     }))),
     results: withResults
       ? review.items.filter((i) => i.result).map((i) => ({ row: i.path, sku: i.label, ok: i.result.ok, message: i.result.message }))

@@ -160,7 +160,10 @@ async function saveBackup(pool, runId, plan, snapshot) {
       );
       // Simple que pasó a ser esta variación: se respalda después de la variación,
       // así "Deshacer" primero borra la variación (libera el SKU) y luego lo restaura.
-      if (item.replaces?.trashed) await saveTrashed('product', item.replaces.id, null, item.replaces.sku, item.replaces.trashed);
+      if (item.replaces?.trashed) {
+        if (item.replaces.kind === 'variation') await saveTrashed('variation', item.replaces.id, item.replaces.parentId, item.replaces.sku, item.replaces.trashed);
+        else await saveTrashed('product', item.replaces.id, null, item.replaces.sku, item.replaces.trashed);
+      }
     } else if (snapshot.has(item)) {
       const { fields, before } = snapshot.get(item);
       await pool.query(

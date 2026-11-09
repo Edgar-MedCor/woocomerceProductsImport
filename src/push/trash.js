@@ -33,7 +33,7 @@ async function snapshotProduct(product) {
 function snapshotVariation(variation, parent) {
   if (!variation || !parent) throw new Error('No se encontró la variación en la tienda.');
   const parentByLang = new Map(versions(parent).map((v) => [v.lang, v.id]));
-  return versions(variation).map((v) => ({ id: v.id, parentId: parentByLang.get(v.lang) ?? parent.id, status: variation.status }));
+  return versions(variation).map((v) => ({ id: v.id, parentId: parentByLang.get(v.lang) ?? parent.id, status: variation.status, sku: variation.sku || '' }));
 }
 
 /**
@@ -56,17 +56,21 @@ async function trashProduct(snapshot, { clearSku = false } = {}) {
 async function restoreProduct(snapshot) {
   for (const v of snapshot) {
     await store.request('put', `products/${v.id}`, { status: v.status, slug: v.slug, sku: v.sku }, undefined, 1);
-    if (v.variations.length) {
-      const res = await store.batch(`products/${v.id}/variations`, { update: v.variations.map(({ id, status }) => ({ id, status })) });
+    // Las que ya estaban en la papelera (p. ej. pasaron a otro producto) se quedan como están.
+    const back = v.variations.filter((x) => x.status !== 'trash');
+    if (back.length) {
+      const res = await store.batch(`products/${v.id}/variations`, { update: back.map(({ id, status }) => ({ id, status })) });
       const failed = res.update.filter((r) => !r.ok);
       if (failed.length) throw new Error(`No se restauraron ${failed.length} variación(es): ${failed[0].error}`);
     }
   }
 }
 
-async function trashVariation(snapshot) {
+async function trashVariation(snapshot, { clearSku = false } = {}) {
   try {
     for (const v of snapshot) {
+      // Libera el SKU (para la variación que la reemplaza en otro producto).
+      if (clearSku && v.sku) await store.request('put', `products/${v.parentId}/variations/${v.id}`, { sku: '' }, undefined, 1);
       await store.request('delete', `products/${v.parentId}/variations/${v.id}`, {}, undefined, 1).catch(ignoreTrashed);
     }
   } catch (error) {
@@ -77,7 +81,7 @@ async function trashVariation(snapshot) {
 
 async function restoreVariation(snapshot) {
   for (const v of snapshot) {
-    await store.request('put', `products/${v.parentId}/variations/${v.id}`, { status: v.status }, undefined, 1);
+    await store.request('put', `products/${v.parentId}/variations/${v.id}`, { status: v.status, ...(v.sku !== undefined ? { sku: v.sku } : {}) }, undefined, 1);
   }
 }
 

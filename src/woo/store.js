@@ -94,9 +94,9 @@ async function fetchProductsLite() {
   return getAll('products', { status: 'any', _fields: 'id,sku,name,type,status,images,categories,permalink,variations', ...lang() });
 }
 
-// Productos con foto e inventario (reporte de productos sin fotos).
+// Productos con fotos, atributos e inventario (reporte de productos sin fotos y galerías del padre).
 async function fetchProductsWithStock() {
-  return getAll('products', { status: 'any', _fields: 'id,sku,name,type,status,images,categories,variations,manage_stock,stock_quantity,stock_status', ...lang() });
+  return getAll('products', { status: 'any', _fields: 'id,sku,name,type,status,images,categories,attributes,variations,manage_stock,stock_quantity,stock_status', ...lang() });
 }
 
 // Productos variables con lo necesario para revisar sus atributos.

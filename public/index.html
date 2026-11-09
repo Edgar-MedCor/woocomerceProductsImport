@@ -78,6 +78,41 @@
           </div>
         </div>
 
+        <div class="card stock-card" data-perm="push">
+          <h2>Actualizar precios e inventario</h2>
+          <p class="muted">Con los archivos del sistema (catálogos completos). Solo se actualizan los productos que ya están en la web, por SKU; los demás SKU del archivo se ignoran. Haz antes "Traer de la tienda".</p>
+          <div class="stock-files">
+            <label class="file-pick">
+              <span class="file-title">Archivo de precios</span>
+              <span class="muted small">ClaveCompleta y Precio (se redondea a pesos)</span>
+              <input type="file" id="pricesFile" accept=".xlsx">
+              <span id="pricesStatus" class="file-status muted">Sin cargar</span>
+            </label>
+            <label class="file-pick">
+              <span class="file-title">Archivo de inventario</span>
+              <span class="muted small">Existencia por almacén</span>
+              <input type="file" id="stockFile" accept=".xlsx">
+              <span id="stockStatus" class="file-status muted">Sin cargar</span>
+            </label>
+          </div>
+          <div id="stockOptions" class="stock-options hidden">
+            <div>
+              <h3>Almacenes que se suman</h3>
+              <p class="muted small">Se reconocen por número. Se recuerda lo que elijas.</p>
+              <div class="plan-actions"><button type="button" class="small secondary" id="whAll">Todos</button><button type="button" class="small secondary" id="whNone">Ninguno</button></div>
+              <div id="warehouseList" class="warehouse-list"></div>
+            </div>
+            <div>
+              <h3>Mínimo por categoría</h3>
+              <p class="muted small">Si el total es menor al mínimo, se publica con inventario 0. Vacío = sin mínimo.</p>
+              <div class="table-wrap thresholds-wrap"><table class="small-table"><thead><tr><th>Categoría</th><th>Mínimo</th></tr></thead><tbody id="thresholdList"></tbody></table></div>
+            </div>
+          </div>
+          <div class="plan-actions">
+            <button id="stockReviewBtn" disabled>Revisar actualización</button>
+          </div>
+        </div>
+
         <div class="job-slot">
         <div id="jobCard" class="card hidden">
           <div class="job-head">

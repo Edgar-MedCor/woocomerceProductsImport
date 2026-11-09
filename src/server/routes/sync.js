@@ -13,6 +13,8 @@ const { requirePermission } = require('../auth');
 const { can, allowedFields, historyTypes } = require('../permissions');
 const dashboard = require('../../photos/dashboard');
 const { buildNoPhotosReport } = require('../../photos/noPhotosReport');
+const stockFiles = require('../../stockprice/files');
+const { buildStockReport } = require('../../stockprice/report');
 const { loadLinks, saveLink, removeLink } = require('../../photos/links');
 const orphans = require('../../report/orphans');
 const { TYPE } = require('../../push/fields');
@@ -176,6 +178,102 @@ router.post('/review', requirePermission('push'), async (req, res, next) => {
       });
       pendingReview = { userId: user.id, reviewed };
       return { summary: reviewed.plan.summary, details: push.publicPlan(reviewed.plan), webUrl: reviewed.source.webUrl };
+    });
+    res.status(202).json({ ok: true, job });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ---------- Actualizar precios e inventario con los archivos del sistema ----------
+// Los archivos se cargan primero (para mostrar sus almacenes) y se guardan en
+// memoria por usuario; la revisión usa lo cargado y deja lista la subida normal.
+const stockUploads = new Map(); // userId -> { prices, stock, at }
+const SETTINGS_KEY = 'stock-price';
+const UPLOAD_TTL_MS = 2 * 60 * 60 * 1000;
+const stockReports = new Map(); // runId -> { userId, buffer } (los últimos 10)
+
+router.get('/stock-price/report/:runId', requirePermission('push'), (req, res) => {
+  const report = stockReports.get(String(req.params.runId));
+  if (!report) return res.status(404).json({ ok: false, message: 'Ese reporte ya no está disponible. Vuelve a revisar la actualización.' });
+  const date = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="precios-e-inventario-${date}.xlsx"`);
+  res.send(report.buffer);
+});
+
+async function loadStockSettings() {
+  const { rows } = await pool.query('SELECT value FROM app_settings WHERE key = $1', [SETTINGS_KEY]);
+  const saved = rows[0]?.value || {};
+  return { warehouses: Array.isArray(saved.warehouses) ? saved.warehouses : null, thresholds: saved.thresholds || stockFiles.DEFAULT_THRESHOLDS };
+}
+
+router.get('/stock-price/settings', requirePermission('push'), async (_req, res, next) => {
+  try {
+    res.json({ ok: true, ...(await loadStockSettings()) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/stock-price/upload', requirePermission('push'), async (req, res, next) => {
+  try {
+    const { kind, data } = req.body || {};
+    if (!['prices', 'stock'].includes(kind) || typeof data !== 'string' || !data) {
+      return res.status(400).json({ ok: false, message: 'Falta el archivo.' });
+    }
+    const buffer = Buffer.from(data, 'base64');
+    const entry = stockUploads.get(String(req.user.id)) || {};
+    if (kind === 'prices') {
+      const parsed = await stockFiles.parsePrices(buffer);
+      entry.prices = parsed.prices;
+      entry.at = Date.now();
+      stockUploads.set(String(req.user.id), entry);
+      return res.json({ ok: true, summary: parsed.summary });
+    }
+    const parsed = await stockFiles.parseStock(buffer);
+    entry.stock = { rows: parsed.rows };
+    entry.at = Date.now();
+    stockUploads.set(String(req.user.id), entry);
+    res.json({ ok: true, summary: parsed.summary, warehouses: parsed.warehouses, categories: parsed.categories });
+  } catch (error) {
+    error.status ??= 400;
+    next(error);
+  }
+});
+
+router.post('/stock-price/review', requirePermission('push'), async (req, res, next) => {
+  try {
+    const user = req.user;
+    const loaded = stockUploads.get(String(user.id));
+    if (!loaded || Date.now() - loaded.at > UPLOAD_TTL_MS) return res.status(400).json({ ok: false, message: 'Primero carga el archivo de precios o el de inventario.' });
+    const { usePrices = true, useStock = true, warehouses = [], thresholds = {} } = req.body || {};
+    const prices = usePrices ? loaded.prices || null : null;
+    const stock = useStock ? loaded.stock || null : null;
+    if (!prices && !stock) return res.status(400).json({ ok: false, message: 'Carga el archivo de precios, el de inventario o los dos.' });
+    if (!Array.isArray(warehouses) || warehouses.some((n) => !Number.isInteger(n))) return res.status(400).json({ ok: false, message: 'Almacenes inválidos.' });
+    if (stock && !warehouses.length) return res.status(400).json({ ok: false, message: 'Elige al menos un almacén para sumar el inventario.' });
+    if (typeof thresholds !== 'object' || Array.isArray(thresholds) || Object.values(thresholds).some((v) => !(Number.isInteger(v) && v >= 0 && v <= 100000))) {
+      return res.status(400).json({ ok: false, message: 'Los mínimos por categoría deben ser números enteros.' });
+    }
+    const cleanThresholds = Object.fromEntries(Object.entries(thresholds).filter(([, v]) => v > 0).map(([k, v]) => [stockFiles.catKey(k).slice(0, 80), v]));
+    // Se recuerdan para la próxima vez.
+    if (stock) {
+      await pool.query(
+        `INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES ($1, $2, $3, now())
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+        [SETTINGS_KEY, JSON.stringify({ warehouses, thresholds: cleanThresholds }), user.id],
+      );
+    }
+    const warehouseNames = new Map((loaded.stock?.rows || []).map((r) => [r.warehouse, r.warehouseName]));
+    const job = await jobs.start('stock-review', user, async ({ runId, log }) => {
+      const reviewed = await push.reviewStockPrice({ prices, stock, warehouses, thresholds: cleanThresholds, allowedFields: allowedFields(user.role), log });
+      pendingReview = { userId: user.id, reviewed };
+      log('Armando el reporte para descargar...');
+      const buffer = await buildStockReport(reviewed.plan, reviewed.report, { warehouses: stock ? warehouses : [], warehouseNames, thresholds: stock ? cleanThresholds : {} });
+      stockReports.set(String(runId), { userId: user.id, buffer });
+      while (stockReports.size > 10) stockReports.delete(stockReports.keys().next().value);
+      return { summary: reviewed.plan.summary, details: push.publicPlan(reviewed.plan), webUrl: reviewed.source.webUrl, downloadUrl: `/api/sync/stock-price/report/${runId}` };
     });
     res.status(202).json({ ok: true, job });
   } catch (error) {

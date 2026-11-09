@@ -284,15 +284,17 @@ const TYPE_LABEL = {
   'photos-report': 'Reporte de productos sin fotos',
   'attrs-review': 'Revisar atributos',
   'attrs-fix': 'Corregir atributos',
+  'stock-review': 'Revisar precios e inventario',
 };
 // Qué revisión habilita qué subida.
 const PUSH_STEP = {
   review: {
     endpoint: '/sync/push',
-    pending: (s) => ['Productos/variaciones nuevos', 'Productos/variaciones con cambios', 'Simples que pasan a variación', 'A eliminar (papelera)', 'Ya existían en la tienda (se vinculan)'].reduce((n, k) => n + (s[k] || 0), 0),
+    pending: (s) => ['Productos/variaciones nuevos', 'Productos/variaciones con cambios', 'Simples que pasan a variación', 'Variaciones que pasan a otro producto', 'A eliminar (papelera)', 'Ya existían en la tienda (se vinculan)'].reduce((n, k) => n + (s[k] || 0), 0),
     label: (n) => `Subir ${n} producto(s) con cambios a la tienda`,
   },
-  'photos-review': { endpoint: '/sync/photos/push', pending: (s) => (s['Productos/colores con fotos nuevas'] || 0) + (s['Productos padre sin foto (se arma su galería)'] || 0), label: (n) => `Subir fotos de ${n} producto(s)/color(es)` },
+  'photos-review': { endpoint: '/sync/photos/push', pending: (s) => (s['Productos/colores con fotos nuevas'] || 0) + (s['Productos padre sin foto o con galería incompleta (se arma su galería)'] || 0), label: (n) => `Subir fotos de ${n} producto(s)/color(es)` },
+  'stock-review': { endpoint: '/sync/push', pending: (s) => s['Productos/variaciones con cambios'] || 0, label: (n) => `Subir precio/inventario de ${n} producto(s) a la tienda` },
   'attrs-review': { endpoint: '/sync/attributes/fix', pending: (s) => s['Productos a corregir'] || 0, label: (n) => `Corregir atributos de ${n} producto(s)` },
 };
 const STATUS_LABEL = { running: 'En curso', success: 'Terminado', error: 'Con error' };
@@ -377,6 +379,7 @@ $$('#tabs button').forEach((b) => b.addEventListener('click', () => switchTab(b.
 
 // ---------- sincronizar ----------
 async function loadSync() {
+  if (can('push')) loadStockSettings().catch((error) => toast(`No se pudieron cargar los ajustes de inventario: ${error.message}`, 'error'));
   if (!$('#excelInfo').dataset.loaded) $('#excelInfo').replaceChildren(spinner(), ' Consultando el Excel…');
   const { excelPath, lastPull, current } = await api('/sync/status');
   $('#excelInfo').dataset.loaded = '1';
@@ -430,7 +433,7 @@ $('#pushBtn').addEventListener('click', async () => {
     return;
   }
   const isPhotos = lastPlanJob?.type === 'photos-review';
-  const trashed = (s['A eliminar (papelera)'] || 0) + (s['Simples que pasan a variación'] || 0);
+  const trashed = (s['A eliminar (papelera)'] || 0) + (s['Simples que pasan a variación'] || 0) + (s['Variaciones que pasan a otro producto'] || 0);
   const ok = await confirmModal({
     title: isPhotos ? 'Subir fotos a la tienda' : 'Subir cambios a la tienda',
     tone: trashed ? 'warning' : 'default',
@@ -438,11 +441,12 @@ $('#pushBtn').addEventListener('click', async () => {
     body: el('div', {},
       el('p', {}, 'Los cambios se verán en la tienda en cuanto termine.'),
       facts(isPhotos
-        ? [['Productos/colores', s['Productos/colores con fotos nuevas']], ['Fotos', s['Fotos a subir']], ['Padres sin foto (se arma su galería)', s['Productos padre sin foto (se arma su galería)'] || null]]
+        ? [['Productos/colores', s['Productos/colores con fotos nuevas']], ['Fotos', s['Fotos a subir']], ['Padres a los que se les arma la galería', s['Productos padre sin foto o con galería incompleta (se arma su galería)'] || null]]
         : [
           ['Nuevos', s['Productos/variaciones nuevos'] || null],
           ['Con cambios', s['Productos/variaciones con cambios'] || null],
           ['Simples que pasan a variación', s['Simples que pasan a variación'] || null],
+          ['Variaciones que pasan a otro producto', s['Variaciones que pasan a otro producto'] || null],
           ['A la papelera', s['A eliminar (papelera)'] || null],
           ['Ya existían (se vinculan)', s['Ya existían en la tienda (se vinculan)'] || null],
         ]),
@@ -472,6 +476,7 @@ function notifyJobEnd(job) {
   const next = {
     pull: 'El Excel ya tiene lo que hay en la tienda.',
     review: pending ? 'Revisa el resumen y, si todo está bien, confirma la subida.' : 'No hay cambios para subir.',
+    'stock-review': pending ? 'Revisa los cambios de precio e inventario y confirma la subida.' : 'Precios e inventario ya están al día.',
     'photos-review': pending ? 'Revisa la lista y confirma para subir las fotos.' : 'No hay fotos nuevas para subir.',
     push: 'Los cambios ya están en la tienda. Revisa el resultado de cada fila.',
     photos: 'Las fotos ya están en la tienda y las carpetas se movieron a "Subidas".',
@@ -522,6 +527,7 @@ function renderJob(job) {
     $('#pullBtn').disabled = running;
     $('#reviewBtn').disabled = running;
     $('#attrsReviewBtn').disabled = running;
+    $('#stockReviewBtn').disabled = running || !stockReady();
   }
   renderPlan(job);
   if (!job) return;
@@ -542,9 +548,9 @@ function renderJob(job) {
   $('#jobError').classList.toggle('hidden', !job.error);
   $('#jobError').textContent = job.error || '';
   $('#forcePullBtn').classList.toggle('hidden', !(job.errorCode === 'EXCEL_MODIFIED' && can('pull:force')));
-  const report = job.type === 'photos-report' && job.status === 'success' && job.webUrl;
+  const report = job.status === 'success' && (job.downloadUrl || (job.type === 'photos-report' && job.webUrl));
   $('#jobDownloadLink').classList.toggle('hidden', !report);
-  if (report) $('#jobDownloadLink').href = job.webUrl;
+  if (report) $('#jobDownloadLink').href = report;
 
   const summary = $('#jobSummary');
   summary.classList.toggle('hidden', !job.summary);
@@ -617,7 +623,7 @@ function renderPlan(job) {
       i.warnings.map((w) => el('li', { class: 'muted' }, w)),
     );
     const r = results.get(i.row);
-    const tag = i.replaces ? ['convert', 'Convertir'] : [i.kind, { create: 'Nuevo', link: 'Ya existe', delete: 'Eliminar' }[i.kind] || 'Cambio'];
+    const tag = i.replaces ? ['convert', i.replaces.kind === 'variation' ? 'Mover' : 'Convertir'] : [i.kind, { create: 'Nuevo', link: 'Ya existe', delete: 'Eliminar' }[i.kind] || 'Cambio'];
     return el('tr', {},
       el('td', {}, String(i.row)),
       el('td', {},
@@ -1223,3 +1229,104 @@ async function boot() {
 }
 $('#bootRetry').addEventListener('click', boot);
 boot();
+
+// ---------- actualizar precios e inventario con los archivos del sistema ----------
+const stock = { settings: null, warehouses: null, categories: [], prices: false };
+const stockReady = () => stock.prices || Boolean(stock.warehouses);
+
+async function loadStockSettings() {
+  if (stock.settings) return;
+  const { warehouses, thresholds } = await api('/sync/stock-price/settings', { quiet: true });
+  stock.settings = { warehouses, thresholds: thresholds || {} };
+}
+
+// Lee el archivo como base64 (sin el prefijo "data:...;base64,").
+const fileToBase64 = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+  reader.onerror = () => reject(new Error('No se pudo leer el archivo.'));
+  reader.readAsDataURL(file);
+});
+
+async function uploadStockFile(kind, input, status) {
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) {
+    status.textContent = 'El archivo pesa más de 20 MB.';
+    status.className = 'file-status err';
+    return;
+  }
+  status.replaceChildren(spinner(), ` Leyendo ${file.name}…`);
+  status.className = 'file-status muted';
+  input.disabled = true;
+  try {
+    await loadStockSettings();
+    const data = await api('/sync/stock-price/upload', { method: 'POST', body: { kind, data: await fileToBase64(file) } });
+    if (kind === 'prices') {
+      stock.prices = true;
+      status.textContent = `✔ ${file.name}: ${data.summary.claves.toLocaleString('es-MX')} claves${data.summary.sinPrecio ? ` (${data.summary.sinPrecio} sin precio)` : ''}`;
+    } else {
+      stock.warehouses = data.warehouses;
+      stock.categories = data.categories;
+      status.textContent = `✔ ${file.name}: ${data.summary.claves.toLocaleString('es-MX')} claves en ${data.warehouses.length} almacenes`;
+      renderStockOptions();
+    }
+    status.className = 'file-status ok';
+  } catch (error) {
+    if (kind === 'prices') stock.prices = false;
+    else {
+      stock.warehouses = null;
+      $('#stockOptions').classList.add('hidden');
+    }
+    status.textContent = error.message;
+    status.className = 'file-status err';
+  } finally {
+    input.disabled = false;
+    $('#stockReviewBtn').disabled = !stockReady();
+  }
+}
+
+function renderStockOptions() {
+  const saved = stock.settings?.warehouses;
+  $('#warehouseList').replaceChildren(...stock.warehouses.map((w) => {
+    const box = el('input', { type: 'checkbox', value: String(w.number) });
+    const isNew = saved && !saved.includes(w.number);
+    box.checked = saved ? saved.includes(w.number) : true;
+    return el('label', { class: 'check' }, box, el('strong', {}, String(w.number)), ` ${w.name || '(sin nombre)'}`,
+      el('span', { class: 'muted small' }, ` · ${w.rows.toLocaleString('es-MX')} renglones${isNew ? ' · nuevo' : ''}`));
+  }));
+  const thresholds = stock.settings?.thresholds || {};
+  const cats = [...new Set([...Object.keys(thresholds), ...stock.categories])].sort((a, b) => a.localeCompare(b, 'es'));
+  $('#thresholdList').replaceChildren(...cats.map((cat) => {
+    const input = el('input', { type: 'number', min: '0', step: '1', inputmode: 'numeric', 'aria-label': `Mínimo de ${cat}`, 'data-cat': cat });
+    if (thresholds[cat]) input.value = thresholds[cat];
+    return el('tr', {}, el('td', {}, cat, stock.categories.includes(cat) ? null : el('span', { class: 'muted small' }, ' (no viene en este archivo)')), el('td', {}, input));
+  }));
+  $('#stockOptions').classList.remove('hidden');
+}
+
+$('#pricesFile').addEventListener('change', (e) => uploadStockFile('prices', e.target, $('#pricesStatus')));
+$('#stockFile').addEventListener('change', (e) => uploadStockFile('stock', e.target, $('#stockStatus')));
+$('#whAll').addEventListener('click', () => $$('#warehouseList input').forEach((b) => { b.checked = true; }));
+$('#whNone').addEventListener('click', () => $$('#warehouseList input').forEach((b) => { b.checked = false; }));
+$('#stockReviewBtn').addEventListener('click', (e) => {
+  const warehouses = $$('#warehouseList input:checked').map((b) => Number(b.value));
+  if (stock.warehouses && !warehouses.length) {
+    toast('Elige al menos un almacén para sumar el inventario.', 'warning');
+    return;
+  }
+  const thresholds = {};
+  for (const input of $$('#thresholdList input')) {
+    const v = input.value.trim();
+    if (!v) continue;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 0) {
+      toast(`El mínimo de ${input.dataset.cat} debe ser un número entero.`, 'warning');
+      input.focus();
+      return;
+    }
+    thresholds[input.dataset.cat] = n;
+  }
+  if (stock.settings) stock.settings = { warehouses: stock.warehouses ? warehouses : stock.settings.warehouses, thresholds };
+  launch(e.currentTarget, () => api('/sync/stock-price/review', { method: 'POST', body: { usePrices: stock.prices, useStock: Boolean(stock.warehouses), warehouses, thresholds } }));
+});

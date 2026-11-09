@@ -20,18 +20,72 @@ async function withConcurrency(items, limit, worker) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
 }
 
-/** Productos sin foto (no incluye la papelera); los variables traen sus variaciones en `variations_data`. */
-async function findShownWithoutPhotos({ progress = () => {} } = {}) {
-  const products = await store.fetchProductsWithStock();
-  const bare = products.filter((p) => p.status !== 'trash' && p.type !== 'variation' && !(p.images || []).length);
-  const variables = bare.filter((p) => p.type === 'variable' && p.variations?.length);
+// Lee las variaciones de estos productos variables (una vez) en `variations_data`.
+async function loadVariations(list, progress, label) {
+  const pending = list.filter((p) => p.type === 'variable' && p.variations?.length && !p.variations_data);
   let done = 0;
-  await withConcurrency(variables, config.photos.concurrency, async (p) => {
+  await withConcurrency(pending, config.photos.concurrency, async (p) => {
     p.variations_data = await store.fetchAllVariations(p.id);
     done += 1;
-    progress(done, variables.length, 'Productos sin foto revisados');
+    progress(done, pending.length, label);
   });
+}
+
+/** Productos sin foto (no incluye la papelera); los variables traen sus variaciones en `variations_data`. */
+async function findShownWithoutPhotos({ products = null, progress = () => {} } = {}) {
+  const all = products || await store.fetchProductsWithStock();
+  const bare = all.filter((p) => p.status !== 'trash' && p.type !== 'variation' && !(p.images || []).length);
+  await loadVariations(bare, progress, 'Productos sin foto revisados');
   return bare;
+}
+
+const plain = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+const colorOf = (v) => plain((v.attributes || []).find((a) => plain(a.name) === 'color')?.option);
+const sortVariations = (variations) => [...variations].sort((a, b) => (a.menu_order ?? 0) - (b.menu_order ?? 0) || a.id - b.id);
+
+/**
+ * Fotos que debe tener el producto padre según sus variaciones:
+ *  - un solo color (las tallas comparten fotos): la foto principal y toda la
+ *    galería, para que se vean sin tener que escoger una talla;
+ *  - varios colores: la foto principal de cada color, en el orden de las variaciones.
+ */
+function parentGalleryFrom(variations) {
+  const withImage = sortVariations(variations).filter((v) => v.image?.id);
+  if (!withImage.length) return [];
+  const singleColor = new Set(withImage.map(colorOf)).size <= 1 || new Set(withImage.map((v) => v.image.id)).size === 1;
+  const ids = [];
+  for (const v of withImage) {
+    for (const id of singleColor ? [v.image.id, ...(v.gallery_image_ids || [])] : [v.image.id]) if (id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+const colorOptions = (p) => ((p.attributes || []).find((a) => plain(a.name) === 'color')?.options || []).length;
+const distinctImages = (p) => new Set((p.images || []).map((i) => i.id)).size;
+
+/**
+ * Productos variables a los que hay que armarles la galería sin subir nada:
+ * los que no tienen foto pero sus variaciones sí, y los de un solo color que
+ * solo tienen la foto principal mientras sus variaciones tienen más.
+ */
+async function findIncompleteParents({ products, progress = () => {} }) {
+  const candidates = products.filter((p) => p.type === 'variable' && p.status !== 'trash' && p.variations?.length
+    && (!distinctImages(p) || (distinctImages(p) <= 1 && colorOptions(p) <= 1)));
+  await loadVariations(candidates, progress, 'Galerías de productos revisadas');
+  const out = [];
+  for (const p of candidates) {
+    const desired = parentGalleryFrom(p.variations_data || []);
+    const current = new Set((p.images || []).map((i) => i.id));
+    if (!desired.length || desired.every((id) => current.has(id))) continue;
+    out.push({
+      id: p.id, sku: p.sku, name: p.name,
+      reason: current.size
+        ? `Solo tiene ${current.size} foto; sus variaciones tienen ${desired.length}. Se le pone la galería completa (no se sube nada nuevo).`
+        : 'No tiene foto, pero sus variaciones sí. No se sube nada nuevo.',
+      photos: desired.length,
+    });
+  }
+  return out;
 }
 
 // Código con fotos en Medios: el SKU exacto o, si no, estilo+color (fotos de todas las tallas).
@@ -62,4 +116,4 @@ function photoSources(p, lookup = media.mediaFor) {
   return { media, withPhoto: variations.filter((x) => x.image?.id).length, total: variations.length };
 }
 
-module.exports = { findShownWithoutPhotos, photoSources, mediaCode };
+module.exports = { findShownWithoutPhotos, findIncompleteParents, parentGalleryFrom, photoSources, mediaCode };

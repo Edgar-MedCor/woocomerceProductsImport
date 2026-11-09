@@ -12,8 +12,8 @@ const MAX_LOG = 200;
 
 function publicJob(job) {
   if (!job) return null;
-  const { id, type, status, startedAt, finishedAt, user, progress, log, summary, details, error, errorCode, webUrl } = job;
-  return { id, type, status, startedAt, finishedAt, user, progress, log, summary, details, error, errorCode, webUrl };
+  const { id, type, status, startedAt, finishedAt, user, progress, log, summary, details, error, errorCode, webUrl, downloadUrl } = job;
+  return { id, type, status, startedAt, finishedAt, user, progress, log, summary, details, error, errorCode, webUrl, downloadUrl };
 }
 
 function getCurrent(lane = 'excel') {
@@ -22,7 +22,7 @@ function getCurrent(lane = 'excel') {
 
 /**
  * Arranca `task(ctx)` en segundo plano. ctx = { runId, log(msg), progress(done, total, label) }.
- * La tarea devuelve { summary, details?, webUrl? }.
+ * La tarea devuelve { summary, details?, webUrl?, downloadUrl? } (downloadUrl: un reporte para descargar).
  */
 async function start(type, user, task) {
   const lane = laneOf(type);
@@ -51,6 +51,7 @@ async function start(type, user, task) {
     error: null,
     errorCode: null,
     webUrl: null,
+    downloadUrl: null,
   };
   current[lane] = job;
 
@@ -70,7 +71,7 @@ async function start(type, user, task) {
     ctx.log(describeRoute());
     try {
       const result = await task(ctx);
-      Object.assign(job, { status: 'success', summary: result?.summary || null, details: result?.details || null, webUrl: result?.webUrl || null });
+      Object.assign(job, { status: 'success', summary: result?.summary || null, details: result?.details || null, webUrl: result?.webUrl || null, downloadUrl: result?.downloadUrl || null });
     } catch (error) {
       const detail = error.response?.data?.message;
       Object.assign(job, { status: 'error', error: detail ? `${error.message} — ${detail}` : error.message, errorCode: error.code || null });

@@ -80,6 +80,13 @@ async function migrate() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_permissions TEXT[] NOT NULL DEFAULT '{}';
     -- Enlace al producto en la tienda, para consultarlo desde el historial.
     ALTER TABLE change_log ADD COLUMN IF NOT EXISTS url TEXT;
+    -- Ajustes del panel que se recuerdan entre usos (p. ej. almacenes y mínimos del inventario).
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_by BIGINT REFERENCES users(id),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
     -- Usuario eliminado: ya no aparece ni puede entrar, pero el historial conserva quién hizo qué.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 

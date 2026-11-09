@@ -123,12 +123,15 @@ async function buildPayload(item, terms, ctx) {
     const urls = splitList(row.images, ',');
     const current = ctx.storeProduct;
     if (isVariation && item.replaces) {
-      // Simple que pasa a variación: reutiliza sus fotos (sin volver a subirlas); la
-      // primera es la principal y las demás van a la galería de la variación.
-      const [main, ...rest] = imagePayload(urls, item.replaces.product?.images);
+      // Simple que pasa a variación (o variación que cambia de producto): reutiliza sus
+      // fotos sin volver a subirlas; la primera es la principal y las demás van a la galería.
+      const moved = item.replaces.kind === 'variation' ? item.replaces.variation : null;
+      const current = moved ? [moved.image].filter(Boolean) : item.replaces.product?.images;
+      const [main, ...rest] = imagePayload(urls, current);
       p.image = main || {};
       const gallery = rest.filter((img) => img.id).map((img) => img.id);
       if (gallery.length) p.gallery_image_ids = gallery;
+      else if (moved?.gallery_image_ids?.length && main?.id === moved.image?.id) p.gallery_image_ids = moved.gallery_image_ids;
     } else if (isVariation) p.image = urls.length ? imagePayload(urls.slice(0, 1), [ctx.storeVariation?.image])[0] : {};
     else p.images = imagePayload(urls, current?.images);
   }
@@ -215,16 +218,24 @@ async function applyPlan(plan, { log = () => {}, onProgress = () => {} } = {}) {
         tick(1);
       }
     }
-    // Simples que pasan a ser variación: primero se libera su SKU y van a la papelera.
+    // Simples que pasan a ser variación y variaciones que cambian de producto: primero
+    // se libera su SKU y van a la papelera.
     for (const entry of vCreates.filter((c) => c.item.replaces)) {
       const { replaces } = entry.item;
+      const what = replaces.kind === 'variation' ? 'la variación' : 'el producto simple';
       try {
-        replaces.trashed = await trash.snapshotProduct(replaces.product);
-        log(`Mandando a la papelera el producto simple ${replaces.sku || replaces.id} (pasa a variación)...`);
-        await trash.trashProduct(replaces.trashed, { clearSku: true });
+        if (replaces.kind === 'variation') {
+          replaces.trashed = trash.snapshotVariation(replaces.variation, replaces.parent);
+          log(`Mandando a la papelera la variación ${replaces.sku || replaces.id} de "${replaces.parentSku}" (pasa a otro producto)...`);
+          await trash.trashVariation(replaces.trashed, { clearSku: true });
+        } else {
+          replaces.trashed = await trash.snapshotProduct(replaces.product);
+          log(`Mandando a la papelera el producto simple ${replaces.sku || replaces.id} (pasa a variación)...`);
+          await trash.trashProduct(replaces.trashed, { clearSku: true });
+        }
       } catch (error) {
         replaces.trashed = null;
-        fail(entry.item, `No se pudo mandar a la papelera el producto simple ID ${replaces.id}: ${error.message}. No se creó la variación.`);
+        fail(entry.item, `No se pudo mandar a la papelera ${what} ID ${replaces.id}: ${error.message}. No se creó la variación.`);
         entry.skip = true;
         tick(1);
       }
@@ -235,15 +246,17 @@ async function applyPlan(plan, { log = () => {}, onProgress = () => {} } = {}) {
     const vr = await store.batch(`products/${parentId}/variations`, { create: toCreate.map((c) => c.payload), update: vUpdates.map((u) => u.payload) }, tick);
     for (const [i, { item }] of toCreate.entries()) {
       const r = vr.create[i];
-      const replaced = item.replaces?.trashed ? ` (el simple ID ${item.replaces.id} se mandó a la papelera)` : '';
+      const what = item.replaces?.kind === 'variation' ? `la variación anterior ID ${item.replaces?.id}` : `el simple ID ${item.replaces?.id}`;
+      const replaced = item.replaces?.trashed ? ` (${what} se mandó a la papelera)` : '';
       item.result = r.ok ? { ok: true, message: `Creada${replaced}`, newId: r.data.id, data: r.data } : { ok: false, message: r.error };
       if (r.ok || !item.replaces?.trashed) continue;
       // No se creó la variación: el simple vuelve a como estaba.
       try {
-        await trash.restoreProduct(item.replaces.trashed);
-        item.result.message += ` El producto simple ID ${item.replaces.id} se restauró como estaba.`;
+        if (item.replaces.kind === 'variation') await trash.restoreVariation(item.replaces.trashed);
+        else await trash.restoreProduct(item.replaces.trashed);
+        item.result.message += ` ${what[0].toUpperCase()}${what.slice(1)} se restauró como estaba.`;
       } catch (error) {
-        item.result.message += ` OJO: el producto simple ID ${item.replaces.id} quedó en la papelera sin SKU (${error.message}). Restáuralo desde WordPress y ponle de nuevo el SKU ${item.replaces.sku}.`;
+        item.result.message += ` OJO: ${what} quedó en la papelera sin SKU (${error.message}). Restáurala desde WordPress y ponle de nuevo el SKU ${item.replaces.sku}.`;
       }
       item.replaces.trashed = null;
     }

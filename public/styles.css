@@ -254,6 +254,24 @@ button.danger-soft:hover { background: #ffb3bd; }
 .new-user button[type="submit"] { margin: 4px 0 10px; height: 40px; }
 .new-user .field-error:empty { display: none; }
 
+/* Actualizar precios e inventario */
+.stock-card { margin-top: 16px; }
+.stock-card h3 { margin: 0 0 4px; font-size: 15px; color: var(--primary); }
+.stock-files { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 12px; }
+.file-pick { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 12px 14px; border: 1px dashed var(--line); border-radius: 10px; background: #f8fafc; cursor: pointer; }
+.file-pick:hover { border-color: var(--primary); }
+.file-pick .file-title { font-weight: bold; color: var(--primary); }
+.file-pick input[type="file"] { padding: 6px; background: #fff; }
+.file-status { font-size: 13px; }
+.file-status.ok { color: var(--ok); }
+.file-status.err { color: var(--err); }
+.stock-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 16px; }
+.warehouse-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 14px; max-height: 320px; overflow: auto; padding: 4px 2px; }
+.warehouse-list .check { margin: 0; }
+.warehouse-list strong { min-width: 26px; display: inline-block; text-align: right; }
+.thresholds-wrap { max-height: 320px; }
+.thresholds-wrap input { width: 90px; margin: 0; padding: 4px 8px; }
+
 /* Mostrar/ocultar contraseña: ícono dentro del campo, a la derecha */
 .pass-wrap { position: relative; display: block; margin-top: 4px; }
 .pass-wrap input { margin-top: 0; padding-right: 42px; box-sizing: border-box; }

@@ -216,3 +216,46 @@ test('Reporte sin fotos: un renglón por producto publicado sin foto, con SKU, n
     media.refreshMediaIndex = realRefresh;
   }
 });
+
+// ---------- Galería del producto padre ----------
+const vimg = (id, color, talla, image, gallery = []) => ({ id, menu_order: 0, attributes: [{ name: 'Color', option: color }, { name: 'Talla', option: talla }], image: image ? { id: image } : null, gallery_image_ids: gallery });
+
+test('Galería del padre: un solo color = foto principal y galería completa (sin repetir)', () => {
+  const { parentGalleryFrom } = require('../src/photos/missing');
+  assert.deepEqual(parentGalleryFrom([vimg(2, 'Fiusha', 'G/EG', 10, [11, 12]), vimg(1, 'Fiusha', 'CH/M', 10, [11, 12])]), [10, 11, 12]);
+});
+
+test('Galería del padre: varios colores = la foto principal de cada color', () => {
+  const { parentGalleryFrom } = require('../src/photos/missing');
+  assert.deepEqual(parentGalleryFrom([
+    vimg(1, 'Negro', 'S', 10, [11]), vimg(2, 'Negro', 'M', 10, [11]), vimg(3, 'Blanco', 'S', 20, [21]), vimg(4, 'Blanco', 'M', null),
+  ]), [10, 20]);
+  assert.deepEqual(parentGalleryFrom([vimg(1, 'Negro', 'S', null)]), []);
+});
+
+test('Revisar fotos: completa padres de un color con solo la foto principal; no toca los que ya están completos ni los de varios colores', async () => {
+  const store = require('../src/woo/store');
+  const { findIncompleteParents } = require('../src/photos/missing');
+  const color1 = (id, sku, images) => ({ id, sku, name: sku, type: 'variable', status: 'publish', variations: [id + 1, id + 2], images: images.map((i) => ({ id: i })), attributes: [{ name: 'Color', options: ['Fiusha'] }] });
+  const products = [
+    color1(10, 'SOLO-PRINCIPAL', [100, 100]), // Woo repite la principal: es 1 foto
+    color1(20, 'COMPLETO', [200, 201, 202]),
+    color1(30, 'SIN-FOTO', []),
+    { ...color1(40, 'DOS-COLORES', [400]), attributes: [{ name: 'Color', options: ['Negro', 'Blanco'] }] },
+  ];
+  const vars = {
+    10: [vimg(11, 'Fiusha', 'CH/M', 100, [101, 102]), vimg(12, 'Fiusha', 'G/EG', 100, [101, 102])],
+    20: [vimg(21, 'Fiusha', 'CH/M', 200, [201, 202])],
+    30: [vimg(31, 'Fiusha', 'CH/M', 300, [301])],
+    40: [vimg(41, 'Negro', 'S', 400, [401]), vimg(42, 'Blanco', 'S', 410)],
+  };
+  const real = store.fetchAllVariations;
+  store.fetchAllVariations = async (id) => vars[id];
+  try {
+    const out = await findIncompleteParents({ products });
+    assert.deepEqual(out.map((p) => [p.sku, p.photos]), [['SOLO-PRINCIPAL', 3], ['SIN-FOTO', 2]]);
+    assert.match(out[0].reason, /Solo tiene 1 foto; sus variaciones tienen 3/);
+  } finally {
+    store.fetchAllVariations = real;
+  }
+});

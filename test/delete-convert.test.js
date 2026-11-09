@@ -241,3 +241,79 @@ test('Reporte de variantes sueltas: agrupa simples por estilo', () => {
   assert.equal(groups[0].parent, null);
   assert.deepEqual(groups[0].items.map((i) => i.talla), ['M', 'S']);
 });
+
+// ---------- Juntar los productos de cada color en uno solo ----------
+// Como "Chamarra Patch": un producto Variable por color (SKU estilo+color), cada uno con sus tallas.
+function catalogByColor() {
+  const catalog = baseCatalog();
+  const v = (id, sku, talla, color, img, gallery) => ({
+    id, sku, menu_order: 0, status: 'publish', regular_price: '1349', sale_price: '', manage_stock: true, stock_quantity: 5, stock_status: 'instock',
+    attributes: [{ id: 1, name: 'Talla', option: talla }, { id: 2, name: 'Color', option: color }], image: { id: img, src: `https://tienda.test/${img}.jpg` },
+    gallery_image_ids: gallery, meta_data: [], weight: '', dimensions: { length: '', width: '', height: '' },
+  });
+  const parent = (id, sku, name, color, vars) => ({
+    id, type: 'variable', name, sku, status: 'publish', slug: sku.toLowerCase(), featured: false, categories: [{ id: 11 }], tags: [], brands: [],
+    short_description: '', description: 'Chamarra', regular_price: '', sale_price: '', manage_stock: false, stock_quantity: null, stock_status: 'instock',
+    weight: '', dimensions: { length: '', width: '', height: '' }, images: [{ id: vars[0].image.id, src: vars[0].image.src }], meta_data: [], date_modified: '2026-10-01T10:00:00',
+    attributes: [{ id: 1, name: 'Talla', options: ['S', 'M'], variation: true, visible: true, position: 0 }, { id: 2, name: 'Color', options: [color], variation: true, visible: true, position: 1 }],
+    variations_data: vars,
+  });
+  catalog.push(parent(500, 'RD49768002', 'Chamarra Patch Negro', 'Negro', [v(501, 'RD49768S002', 'S', 'Negro', 81, [82, 83]), v(502, 'RD49768M002', 'M', 'Negro', 81, [82, 83])]));
+  catalog.push(parent(510, 'RD49768021', 'Chamarra Patch Fiusha', 'Fiusha', [v(511, 'RD49768S021', 'S', 'Fiusha', 91, [92]), v(512, 'RD49768M021', 'M', 'Fiusha', 91, [92])]));
+  return catalog;
+}
+
+async function mergeByStyle(options = { canDelete: true }) {
+  const catalog = catalogByColor();
+  const store = mockStore(catalog);
+  const excel = await excelFrom(catalog);
+  addRow(excel, { type: TYPE.variable, sku: 'RD49768', name: 'Chamarra Patch', status: 'Publicado', categories: 'ROPA DAMA > PANTALON', attr_color: 'Negro | Fiusha', attr_talla: 'S | M' });
+  for (const sku of ['RD49768S002', 'RD49768M002', 'RD49768S021', 'RD49768M021']) rowBySku(excel, sku).parentSku = 'RD49768';
+  rowBySku(excel, 'RD49768002').status = 'Eliminar';
+  rowBySku(excel, 'RD49768021').status = 'Eliminar';
+  return { store, excel, plan: await buildPlan(excel, options) };
+}
+
+test('Juntar productos por color: las variaciones pasan al producto nuevo y los de cada color se eliminan', async () => {
+  const { plan } = await mergeByStyle();
+  assert.deepEqual(plan.items.filter((i) => i.errors.length).map((i) => [i.data.sku, i.errors]), []);
+  assert.equal(plan.summary['Productos/variaciones nuevos'], 1);
+  assert.equal(plan.summary['Variaciones que pasan a otro producto'], 4);
+  assert.equal(plan.summary['A eliminar (papelera)'], 2);
+  const moved = itemOf(plan, 'RD49768S021');
+  assert.equal(moved.replaces.kind, 'variation');
+  assert.equal(moved.replaces.parentId, 510);
+  assert.match(moved.warnings.join(), /Pasa del producto "RD49768021" al "RD49768"/);
+});
+
+test('Pasar una variación a otro producto sin permiso de eliminar: no se sube', async () => {
+  const { plan } = await mergeByStyle({ canDelete: false });
+  assert.match(itemOf(plan, 'RD49768S002').errors.join(), /permiso de eliminar/);
+});
+
+test('Juntar y deshacer: mismo SKU, precio, inventario y fotos en el producto nuevo; "Deshacer" deja todo como estaba', async () => {
+  const { store, plan } = await mergeByStyle();
+  const backups = await push(plan);
+  const failed = plan.items.filter((i) => i.result && !i.result.ok).map((i) => [i.data.sku, i.result.message]);
+  assert.deepEqual(failed, []);
+
+  const merged = store.find((p) => p.sku === 'RD49768');
+  const vars = merged.variations_data.filter((x) => x.status !== 'trash');
+  assert.deepEqual(vars.map((x) => x.sku).sort(), ['RD49768M002', 'RD49768M021', 'RD49768S002', 'RD49768S021']);
+  const fiusha = vars.find((x) => x.sku === 'RD49768S021');
+  assert.equal(fiusha.regular_price, '1349');
+  assert.equal(fiusha.stock_quantity, 5);
+  assert.deepEqual(fiusha.image, { id: 91 }, 'reusa la foto sin subirla otra vez');
+  assert.deepEqual(fiusha.gallery_image_ids, [92], 'y su galería');
+  const old = store.find((p) => p.id === 510);
+  assert.equal(old.status, 'trash');
+  assert.equal(old.variations_data.find((x) => x.id === 511).sku, '', 'la variación anterior libera su SKU');
+
+  const { results } = await undoInStore(backups);
+  assert.ok(results.every((r) => r.ok), JSON.stringify(results));
+  assert.equal(store.some((p) => p.sku === 'RD49768' && p.status !== 'trash'), false, 'el producto nuevo se borró');
+  assert.equal(old.status, 'publish');
+  const back = old.variations_data.find((x) => x.id === 511);
+  assert.equal(back.status, 'publish');
+  assert.equal(back.sku, 'RD49768S021', 'recupera su SKU');
+});
