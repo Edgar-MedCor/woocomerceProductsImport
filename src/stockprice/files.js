@@ -1,6 +1,8 @@
 // Actualizar precios e inventario de la tienda con los archivos del sistema de la
 // empresa (catálogos completos, no solo lo que está en la web):
-//   - Precios: una fila por clave ("ClaveCompleta" + "Precio").
+//   - Precios: una fila por clave ("ClaveCompleta" + "Precio"). Si además trae
+//     "PrecioDescuento" (y "PorcentajeDescuento"), también se actualiza el precio
+//     rebajado: con descuento se pone, sin descuento se quita.
 //   - Inventario: una fila por clave y almacén ("No Almacen", "C Completa",
 //     "Categoria", "Existencia"). El inventario de la web es la suma de los
 //     almacenes elegidos (por NÚMERO: el nombre puede venir escrito distinto), y si
@@ -20,7 +22,7 @@ const DEFAULT_THRESHOLDS = {
 };
 
 const COLUMNS = {
-  prices: { sku: ['clavecompleta', 'ccompleta', 'sku'], price: ['precio', 'precionormal'] },
+  prices: { sku: ['clavecompleta', 'ccompleta', 'sku'], price: ['precio', 'precionormal'], sale: ['preciodescuento', 'preciorebajado', 'preciocondescuento'], percent: ['porcentajedescuento', 'descuento'] },
   stock: { warehouse: ['noalmacen', 'numalmacen', 'almacen'], warehouseName: ['nomalmacen', 'nombrealmacen'], sku: ['ccompleta', 'clavecompleta', 'sku'], category: ['categoria'], quantity: ['existencia', 'existencias', 'inventario'] },
 };
 const LABELS = { sku: 'clave completa', price: 'Precio', warehouse: 'No Almacen', warehouseName: 'Nom Almacen', category: 'Categoria', quantity: 'Existencia' };
@@ -62,10 +64,17 @@ const toNumber = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
-/** Precios: SKU -> precio redondeado a entero (null si viene vacío o en 0). */
+/**
+ * Precios: SKU -> precio redondeado a entero (null si viene vacío o en 0).
+ * sales (solo si el archivo trae la columna "PrecioDescuento"): SKU -> { price, percent }
+ * del precio rebajado, o null si esa clave no tiene descuento (precio con
+ * descuento vacío, en 0 o que no queda debajo del precio normal ya redondeado).
+ */
 async function parsePrices(buffer) {
   const rows = await readSheet(buffer, 'prices');
+  const hasSale = rows.length > 0 && Object.prototype.hasOwnProperty.call(rows[0], 'sale');
   const prices = new Map();
+  const sales = hasSale ? new Map() : null;
   let withoutPrice = 0;
   for (const r of rows) {
     const sku = skuKey(r.sku);
@@ -74,8 +83,16 @@ async function parsePrices(buffer) {
     const price = n && n > 0 ? Math.round(n) : null;
     if (price === null) withoutPrice += 1;
     prices.set(sku, price);
+    if (sales) {
+      const s = toNumber(r.sale);
+      const sale = s && s > 0 ? Math.round(s) : null;
+      const ok = price !== null && sale !== null && sale < price;
+      const pct = toNumber(r.percent);
+      sales.set(sku, ok ? { price: sale, percent: pct && pct > 0 ? Math.round(pct * 100) / 100 : Math.round((1 - sale / price) * 10000) / 100 } : null);
+    }
   }
-  return { prices, summary: { claves: prices.size, sinPrecio: withoutPrice } };
+  const conDescuento = sales ? [...sales.values()].filter(Boolean).length : 0;
+  return { prices, sales, summary: { claves: prices.size, sinPrecio: withoutPrice, ...(sales ? { conDescuento } : {}) } };
 }
 
 /** Inventario: filas por almacén, y la lista de almacenes (número, nombre, renglones). */

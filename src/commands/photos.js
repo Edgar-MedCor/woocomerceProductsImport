@@ -333,13 +333,52 @@ async function assign(item, mediaIds) {
   return `Galería con ${mediaIds.length} foto(s)`;
 }
 
+const FS_PREFIX = /^\s*f\s*\.?\s*s\s*\.?\s+/i;
+
 // Ruta de destino: misma ruta de categorías, aplicando el cambio de prefijo (F.S. -> S.).
 function donePath(relativeDir) {
   const parts = relativeDir === '.' ? [] : relativeDir.split('/').map((part) => {
     for (const [from, to] of config.photos.doneRename) if (part.startsWith(from)) return to + part.slice(from.length);
+    // Prefijo escrito distinto ("F.S Trajes", "FS. Trajes"): también pasa a "S. ".
+    if (FS_PREFIX.test(part)) return part.replace(FS_PREFIX, 'S. ');
     return part;
   });
   return [config.photos.donePath, ...parts].join('/');
+}
+
+// Nombre de carpeta para comparar: sin el prefijo "F.S." / "F.S" / "S." (con o sin
+// punto), sin acentos, mayúsculas ni signos. "F.S Trajes de baño" = "S. Trajes de Baño".
+const folderKey = (name) => String(name ?? '')
+  .normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/^\s*(?:f\s*\.?\s*s|s)\s*\.?\s+/i, '')
+  .replace(/[^a-z0-9]/gi, '').toLowerCase();
+
+/**
+ * Carpeta de destino en "subidas" para una ruta de "falta subir", usando SOLO
+ * carpetas que ya existen (nunca crea): en cada nivel busca la subcarpeta con el
+ * mismo nombre sin importar el prefijo, puntos ni acentos. Si falta, lanza un error.
+ * `cache`: hijos ya listados por carpeta (para no repetir llamadas en la misma subida).
+ */
+async function resolveDoneFolder(relativeDir, { cache = new Map(), drive = onedrive } = {}) {
+  let folder = await drive.getItemByPath(config.photos.donePath);
+  if (!folder) throw new Error(`no existe la carpeta "${config.photos.donePath}"`);
+  const wanted = donePath(relativeDir).split('/').slice(config.photos.donePath.split('/').filter(Boolean).length);
+  const original = relativeDir === '.' ? [] : relativeDir.split('/');
+  let shown = config.photos.donePath;
+  for (const [n, name] of wanted.entries()) {
+    const r = drive.ref(folder);
+    const cacheKey = `${r.driveId}:${r.id}`;
+    if (!cache.has(cacheKey)) cache.set(cacheKey, (await drive.listChildren(r)).filter((c) => c.folder || c.remoteItem?.folder));
+    const children = cache.get(cacheKey);
+    const match = children.find((c) => c.name === name)
+      || children.find((c) => c.name.toLowerCase() === name.toLowerCase())
+      || children.find((c) => folderKey(c.name) === folderKey(original[n] ?? name) && !FS_PREFIX.test(c.name))
+      || children.find((c) => folderKey(c.name) === folderKey(original[n] ?? name));
+    if (!match) throw new Error(`no existe la carpeta "${name}" dentro de "${shown}"; créala (o corrige el nombre) y mueve la carpeta a mano`);
+    folder = match;
+    shown = `${shown}/${match.name}`;
+  }
+  return folder;
 }
 
 /** Paso 2: sube las fotos, las asigna y mueve las carpetas terminadas. */
@@ -421,6 +460,7 @@ async function applyPhotos(review, { pool, runId, log = console.log, progress = 
   log(`Moviendo carpetas terminadas a "${config.photos.donePath}"...`);
   const moved = [];
   const notMoved = [];
+  const folderCache = new Map();
   for (const top of review.folders.filter((f) => !f.parentSkuFolder)) {
     const group = review.items.filter((i) => i.path === top.relativePath || i.path.startsWith(`${top.relativePath}/`));
     if (!group.length) continue;
@@ -429,7 +469,7 @@ async function applyPhotos(review, { pool, runId, log = console.log, progress = 
       continue;
     }
     try {
-      const destination = await onedrive.ensureFolderPath(donePath(path.dirname(top.relativePath)));
+      const destination = await resolveDoneFolder(path.dirname(top.relativePath), { cache: folderCache });
       await onedrive.moveItem(top.folder, destination);
       moved.push(top.relativePath);
     } catch (error) {
@@ -497,4 +537,4 @@ function publicPhotos(review, { withResults = false } = {}) {
   };
 }
 
-module.exports = { reviewPhotos, applyPhotos, publicPhotos, donePath, buildTargets, checkSku, mediaItems };
+module.exports = { reviewPhotos, applyPhotos, publicPhotos, donePath, folderKey, resolveDoneFolder, buildTargets, checkSku, mediaItems };

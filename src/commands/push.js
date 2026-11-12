@@ -53,10 +53,10 @@ const headerOf = (key) => COLUMNS.find((c) => c.key === key).header;
  * alguien esté editando en el Excel se queda para su propia revisión.
  * Solo productos simples y variaciones con SKU (los padres no tienen precio ni inventario propio).
  */
-function stockPriceRows(excel, { prices = null, stock = null, warehouses = [], thresholds = {} } = {}) {
+function stockPriceRows(excel, { prices = null, sales = null, stock = null, warehouses = [], thresholds = {} } = {}) {
   const rowById = new Map(excel.rows.filter((r) => !isBlank(r.id)).map((r) => [String(r.id).trim(), r]));
   const totals = stock ? stockBySku(stock.rows, warehouses, thresholds) : null;
-  const report = { sinPrecioEnArchivo: [], precioVacio: [], sinInventarioEnArchivo: [], enCero: [], zero: [], names: new Map(), precios: 0, inventarios: 0 };
+  const report = { sinPrecioEnArchivo: [], precioVacio: [], sinInventarioEnArchivo: [], enCero: [], zero: [], names: new Map(), precios: 0, inventarios: 0, descuentos: sales && prices ? [] : null };
   const edits = []; // celdas de la hoja visible que se escriben si se sube (para que el Excel quede igual que la tienda)
   const rows = [];
   for (const base of excel.baseRows) {
@@ -75,6 +75,13 @@ function stockPriceRows(excel, { prices = null, stock = null, warehouses = [], t
         row.regularPrice = prices.get(sku);
         report.precios += 1;
         edits.push({ id: base.id, key: 'regularPrice', value: row.regularPrice });
+        // Precio rebajado (si el archivo trae la columna): con descuento se pone, sin descuento se quita.
+        if (sales) {
+          const sale = sales.get(sku) || null;
+          row.salePrice = sale ? sale.price : null;
+          edits.push({ id: base.id, key: 'salePrice', value: row.salePrice });
+          if (sale) report.descuentos.push({ sku: base.sku, regular: row.regularPrice, sale: sale.price, percent: sale.percent, before: base.salePrice ?? null });
+        }
       }
     }
     if (totals) {
@@ -116,21 +123,23 @@ const listNote = (title, skus, max = 60) => (skus.length
   : null);
 
 /** Revisión de precios/inventario: misma revisión, subida, historial y "Deshacer" que el Excel. */
-async function reviewStockPrice({ prices = null, stock = null, warehouses = [], thresholds = {}, allowedFields = null, log = console.log } = {}) {
+async function reviewStockPrice({ prices = null, sales = null, stock = null, warehouses = [], thresholds = {}, allowedFields = null, log = console.log } = {}) {
   if (!prices && !stock) throw new Error('Carga el archivo de precios, el de inventario o los dos.');
   const { excel, source } = await loadExcel({ log });
   log('Cruzando los archivos con los SKU de la tienda...');
-  const { rows, report, edits } = stockPriceRows(excel, { prices, stock, warehouses, thresholds });
+  const { rows, report, edits } = stockPriceRows(excel, { prices, sales, stock, warehouses, thresholds });
   const plan = await buildPlan({ ...excel, rows }, { allowedFields, canCreate: false, canDelete: false, log });
   applyCellEdits(excel, edits);
   plan.summary = {
     ...(prices ? { 'SKU de la web con precio en el archivo': report.precios, 'SKU de la web que NO vienen en el archivo de precios (no se actualizan)': report.sinPrecioEnArchivo.length } : {}),
+    ...(prices && sales ? { 'SKU de la web con descuento (precio rebajado)': report.descuentos.length } : {}),
     ...(stock ? { 'SKU de la web con inventario en el archivo': report.inventarios, 'SKU de la web que NO vienen en el archivo de inventario (no se actualizan)': report.sinInventarioEnArchivo.length, 'Inventario en 0 por estar debajo del mínimo de su categoría': report.enCero.length } : {}),
     ...plan.summary,
   };
   plan.notes = [
     listNote('No vienen en el archivo de precios, su precio no se actualiza', report.sinPrecioEnArchivo),
     listNote('Vienen sin precio en el archivo, su precio no se actualiza', report.precioVacio),
+    prices && sales ? 'El archivo de precios trae descuentos: se pone el precio rebajado a los que tienen descuento y se quita a los que no (la lista completa está en la hoja "Con descuento" del reporte).' : null,
     listNote('No vienen en el archivo de inventario, su inventario no se actualiza', report.sinInventarioEnArchivo),
     listNote('Se publican con inventario 0 por estar debajo del mínimo de su categoría', report.enCero, 40),
     stock ? `Inventario = suma de los almacenes ${[...warehouses].sort((a, b) => a - b).join(', ')}.` : null,

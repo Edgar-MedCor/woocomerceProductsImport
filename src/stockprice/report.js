@@ -28,6 +28,8 @@ async function buildStockReport(plan, report, { warehouses = [], warehouseNames 
     { header: 'Tipo', key: 'type', width: 11 },
     { header: 'Precio antes', key: 'p0', width: 13 },
     { header: 'Precio nuevo', key: 'p1', width: 13 },
+    { header: 'Precio rebajado antes', key: 'r0', width: 15 },
+    { header: 'Precio rebajado nuevo', key: 'r1', width: 15 },
     { header: 'Inventario antes', key: 's0', width: 15 },
     { header: 'Inventario nuevo', key: 's1', width: 15 },
     { header: 'Disponibilidad nueva', key: 'st', width: 18 },
@@ -36,9 +38,10 @@ async function buildStockReport(plan, report, { warehouses = [], warehouseNames 
     const p = change(i, 'regularPrice');
     const s = change(i, 'stock');
     const st = change(i, 'stockStatus');
+    const r = change(i, 'salePrice');
     return {
       sku: i.data.sku, name: report.names.get(String(i.data.sku)) || i.data.name || '', type: i.type,
-      p0: p ? num(p.from) : null, p1: p ? num(p.to) : null, s0: s ? num(s.from) : null, s1: s ? num(s.to) : null, st: st ? st.to : null,
+      p0: p ? num(p.from) : null, p1: p ? num(p.to) : null, r0: r ? num(r.from) : null, r1: r ? num(r.to) : null, s0: s ? num(s.from) : null, s1: s ? num(s.to) : null, st: st ? st.to : null,
       note: [...i.errors.map((e) => `No se sube: ${e}`), ...i.conflicts.map((c) => `Conflicto: alguien cambió "${c.header}" en la tienda`)].join(' ') || null,
     };
   }));
@@ -61,6 +64,17 @@ async function buildStockReport(plan, report, { warehouses = [], warehouseNames 
     { header: 'Total de los almacenes', key: 'total', width: 20 },
     { header: 'Mínimo', key: 'min', width: 10 },
   ], report.zero.map((z) => ({ ...z, name: report.names.get(String(z.sku)) || '' })));
+
+  if (report.descuentos) {
+    sheet(wb, 'Con descuento', [
+      { header: 'SKU', key: 'sku', width: 18 },
+      { header: 'Producto', key: 'name', width: 40 },
+      { header: 'Precio normal', key: 'regular', width: 14 },
+      { header: '% descuento', key: 'percent', width: 12 },
+      { header: 'Precio rebajado', key: 'sale', width: 15 },
+      { header: 'Precio rebajado antes', key: 'before', width: 19 },
+    ], report.descuentos.map((d) => ({ ...d, before: num(d.before), name: report.names.get(String(d.sku)) || '' })));
+  }
 
   const params = [
     ['Almacenes sumados', warehouses.map((n) => `${n}${warehouseNames.get(n) ? ` ${warehouseNames.get(n)}` : ''}`).join(', ') || '(no se actualizó inventario)'],

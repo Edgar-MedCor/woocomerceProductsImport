@@ -1274,7 +1274,7 @@ async function uploadStockFile(kind, input, status) {
     status.replaceChildren(spinner(), ` Revisando ${file.name}…`);
     if (kind === 'prices') {
       stock.prices = true;
-      status.textContent = `✔ ${file.name}: ${data.summary.claves.toLocaleString('es-MX')} claves${data.summary.sinPrecio ? ` (${data.summary.sinPrecio} sin precio)` : ''}`;
+      status.textContent = `✔ ${file.name}: ${data.summary.claves.toLocaleString('es-MX')} claves${data.summary.sinPrecio ? ` (${data.summary.sinPrecio} sin precio)` : ''}${data.summary.conDescuento !== undefined ? `, ${data.summary.conDescuento.toLocaleString('es-MX')} con descuento` : ''}`;
     } else {
       stock.warehouses = data.warehouses;
       stock.categories = data.categories;

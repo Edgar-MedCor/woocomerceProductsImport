@@ -259,3 +259,37 @@ test('Revisar fotos: completa padres de un color con solo la foto principal; no 
     store.fetchAllVariations = real;
   }
 });
+
+test('Mover a subidas: usa carpetas existentes aunque el prefijo venga sin punto, y nunca crea', async () => {
+  const { folderKey, resolveDoneFolder } = require('../src/commands/photos');
+  assert.equal(folderKey('F.S Trajes de baño'), folderKey('S. Trajes de Baño'));
+  assert.equal(folderKey('F.S. Ropa Caballero'), folderKey('S. Ropa Caballero'));
+  assert.notEqual(folderKey('Sombreros'), folderKey('ombreros'), 'no quita una "S" que es parte del nombre');
+  const tree = {
+    root: [{ id: 'rc', name: 'S. Ropa Caballero', folder: {} }],
+    rc: [{ id: 'tb', name: 'S. Trajes de baño', folder: {} }, { id: 'f', name: 'S. Trajes de baño.jpg', file: {} }],
+    tb: [],
+  };
+  const created = [];
+  const drive = {
+    getItemByPath: async () => ({ id: 'root' }),
+    ref: (i) => ({ driveId: 'd', id: i.id }),
+    listChildren: async ({ id }) => tree[id],
+    ensureFolderPath: async (p) => created.push(p),
+  };
+  const dest = await resolveDoneFolder('F.S. Ropa Caballero/F.S Trajes de baño', { drive });
+  assert.equal(dest.id, 'tb');
+  await assert.rejects(resolveDoneFolder('F.S. Ropa Caballero/F.S Bermudas', { drive }), /no existe la carpeta "S\. Bermudas" dentro de ".*S\. Ropa Caballero"/);
+  assert.deepEqual(created, []);
+});
+
+test('Mover a subidas: "F.S Trajes" va a "S. Trajes" aunque exista una carpeta "F.S Trajes" creada por error', async () => {
+  const { resolveDoneFolder, donePath } = require('../src/commands/photos');
+  assert.equal(donePath('F.S. Ropa Caballero/F.S Trajes de baño'), `${config.photos.donePath}/S. Ropa Caballero/S. Trajes de baño`);
+  const tree = {
+    root: [{ id: 'rc', name: 'S. Ropa Caballero', folder: {} }],
+    rc: [{ id: 'mal', name: 'F.S Trajes de baño', folder: {} }, { id: 'bien', name: 'S. Trajes de Baño', folder: {} }],
+  };
+  const drive = { getItemByPath: async () => ({ id: 'root' }), ref: (i) => ({ driveId: 'd', id: i.id }), listChildren: async ({ id }) => tree[id] };
+  assert.equal((await resolveDoneFolder('F.S. Ropa Caballero/F.S Trajes de baño', { drive })).id, 'bien');
+});

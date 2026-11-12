@@ -77,7 +77,7 @@ Los respaldos quedan en `/var/backups/wayan-sync` (14 días).
 | Estado | `pm2 status wayan-sync` |
 | Registros | `pm2 logs wayan-sync` |
 | Reiniciar | `pm2 restart wayan-sync` |
-| Actualizar versión | `cd /var/www/woocomerceProductsImport && git pull && npm ci --omit=dev && pm2 restart wayan-sync` |
+| Actualizar versión | `cd /var/www/woocomerceProductsImport && git pull && npm ci --omi=dev && pm2 restart wayan-sync` |
 
 Antes de reiniciar o actualizar, revisar en el panel que no haya una sincronización en curso.
 La sesión de Microsoft queda en `/root/.wayan-sync/` (el panel corre como root, igual que las demás apps de pm2).

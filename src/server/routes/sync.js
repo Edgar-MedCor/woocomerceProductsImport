@@ -246,6 +246,7 @@ router.post('/stock-price/upload', requirePermission('push'), async (req, res, n
     if (kind === 'prices') {
       const parsed = await stockFiles.parsePrices(buffer);
       entry.prices = parsed.prices;
+      entry.sales = parsed.sales;
       entry.at = Date.now();
       stockUploads.set(String(req.user.id), entry);
       return res.json({ ok: true, summary: parsed.summary });
@@ -268,6 +269,7 @@ router.post('/stock-price/review', requirePermission('push'), async (req, res, n
     if (!loaded || Date.now() - loaded.at > UPLOAD_TTL_MS) return res.status(400).json({ ok: false, message: 'Primero carga el archivo de precios o el de inventario.' });
     const { usePrices = true, useStock = true, warehouses = [], thresholds = {} } = req.body || {};
     const prices = usePrices ? loaded.prices || null : null;
+    const sales = prices ? loaded.sales || null : null;
     const stock = useStock ? loaded.stock || null : null;
     if (!prices && !stock) return res.status(400).json({ ok: false, message: 'Carga el archivo de precios, el de inventario o los dos.' });
     if (!Array.isArray(warehouses) || warehouses.some((n) => !Number.isInteger(n))) return res.status(400).json({ ok: false, message: 'Almacenes inválidos.' });
@@ -286,7 +288,7 @@ router.post('/stock-price/review', requirePermission('push'), async (req, res, n
     }
     const warehouseNames = new Map((loaded.stock?.rows || []).map((r) => [r.warehouse, r.warehouseName]));
     const job = await jobs.start('stock-review', user, async ({ runId, log }) => {
-      const reviewed = await push.reviewStockPrice({ prices, stock, warehouses, thresholds: cleanThresholds, allowedFields: allowedFields(user.role), log });
+      const reviewed = await push.reviewStockPrice({ prices, sales, stock, warehouses, thresholds: cleanThresholds, allowedFields: allowedFields(user.role), log });
       pendingReview = { userId: user.id, reviewed };
       log('Armando el reporte para descargar...');
       const buffer = await buildStockReport(reviewed.plan, reviewed.report, { warehouses: stock ? warehouses : [], warehouseNames, thresholds: stock ? cleanThresholds : {} });
