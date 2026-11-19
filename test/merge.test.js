@@ -51,11 +51,27 @@ function catalog() {
   ];
 }
 
-function install() {
-  const live = mockStore(catalog());
+// Tienda simulada con WPML: los productos con lang "en" son traducciones (la API normal no las muestra,
+// pero sus SKU sí ocupan lugar). Como en Woo, un SKU no se puede repetir (salvo en la papelera).
+function install(extra = []) {
+  const live = mockStore([...catalog(), ...extra]);
   const notTrashed = (x) => x.status !== 'trash';
-  store.fetchProductsForOrphans = async () => live.filter(notTrashed).map(({ variations_data: _v, ...p }) => clone(p));
+  const spanish = (p) => p.lang !== 'en';
+  const strip = ({ variations_data: _v, ...p }) => clone(p);
+  store.fetchProductsForOrphans = async () => live.filter((p) => notTrashed(p) && spanish(p) && !p.hidden).map(strip);
   store.fetchVariationSkus = async (id) => clone((live.find((p) => p.id === id)?.variations_data || []).filter(notTrashed));
+  store.fetchTranslationsBySkus = async (skus) => live.filter((p) => p.lang === 'en' && notTrashed(p) && skus.includes(p.sku)).map(strip);
+  store.fetchVariationsInLang = async (id) => clone((live.find((p) => p.id === id)?.variations_data || []).filter(notTrashed));
+  const holders = (sku, selfId) => live.flatMap((p) => [p, ...(p.variations_data || []).map((x) => ({ ...x, parentStatus: p.status }))])
+    .filter((x) => x.id !== selfId && x.status !== 'trash' && x.sku && x.sku === sku);
+  const request = store.request;
+  store.request = async (method, endpoint, data = {}, ...rest) => {
+    if (method === 'put' && data.sku) {
+      const id = Number(endpoint.split('/').pop());
+      if (holders(data.sku, id).length) throw Object.assign(new Error('SKU no válido o duplicado.'), { response: { status: 400, data: { message: 'SKU no válido o duplicado.' } } });
+    }
+    return request(method, endpoint, data, ...rest);
+  };
   return live;
 }
 
@@ -169,4 +185,64 @@ test('un estilo con errores no se toca', async () => {
   assert.equal(umbrella.result, undefined);
   assert.equal(bySku(live, 'RD49321'), undefined);
   assert.equal(pool.rows.length, 0);
+});
+
+// Estilo de 2 colores donde el 001 tiene versión en inglés con los mismos SKU (como RD40070).
+const withEnglish = () => [
+  base({ id: 700, type: 'variable', sku: 'RD40070001', name: 'Pantalón Bombacho Blanco', slug: 'bombacho-blanco', attributes: [color(['Blanco']), talla(['CH/M'], true)],
+    variations_data: [v(701, 'RD40070SM001', [{ id: 1, name: 'Talla', option: 'CH/M' }])] }),
+  base({ id: 710, type: 'variable', sku: 'RD40070002', name: 'Pantalón Bombacho Negro', slug: 'bombacho-negro', attributes: [color(['Negro']), talla(['CH/M'], true)],
+    variations_data: [v(711, 'RD40070SM002', [{ id: 1, name: 'Talla', option: 'CH/M' }])] }),
+  base({ id: 750, lang: 'en', type: 'variable', sku: 'RD40070001', name: 'Baggy Pants White', slug: 'baggy-white', attributes: [color(['White']), talla(['CH/M'], true)],
+    variations_data: [v(751, 'RD40070SM001', [{ id: 1, name: 'Talla', option: 'CH/M' }])] }),
+];
+
+test('con versión en inglés: libera su SKU y la manda a la papelera', async () => {
+  const live = install(withEnglish());
+  // WPML deja repetir el SKU entre traducciones; la tienda simulada lo tiene así desde el inicio.
+  const review = await merge.reviewMerge({ log: () => {} });
+  const plan = review.plans.find((p) => p.style === 'RD40070');
+  assert.deepEqual(plan.errors, []);
+  assert.ok(plan.warnings.some((w) => w.includes('versión en inglés')));
+  const pool = fakePool();
+  await merge.applyMerge(review, { selected: new Set(['RD40070']), pool, runId: 1, log: () => {} });
+  assert.equal(plan.result.ok, true, plan.result.message);
+  const model = bySku(live, 'RD40070');
+  assert.deepEqual(model.variations_data.map((x) => x.sku).sort(), ['RD40070SM001', 'RD40070SM002']);
+  const en = live.find((p) => p.id === 750);
+  assert.equal(en.status, 'trash');
+  assert.equal(en.variations_data[0].sku, '', 'la variación en inglés queda sin SKU');
+  assert.ok(pool.rows.some((r) => r.action === 'delete' && r.woo_id === '750'), 'la versión en inglés se puede restaurar con Deshacer');
+
+  // Deshacer: el español regresa con su SKU.
+  const { results } = await undoInStore(pool.rows, { log: () => {} });
+  assert.ok(results.every((r) => r.ok), JSON.stringify(results.filter((r) => !r.ok)));
+  assert.equal(bySku(live, 'RD40070'), undefined);
+  assert.equal(live.find((p) => p.id === 700).variations_data[0].sku, 'RD40070SM001');
+  assert.equal(live.find((p) => p.id === 700).variations_data[0].status, 'publish');
+  assert.equal(live.find((p) => p.id === 750).status, 'publish');
+});
+
+test('si un SKU no se puede pasar, el estilo regresa completo y no queda nada a medias', async () => {
+  // Algo que no aparece en el reporte ocupa RD40070SM002 (como un registro viejo de la tabla de búsqueda).
+  const ghost = base({ id: 790, hidden: true, type: 'variable', sku: 'ZZ-FANTASMA', name: 'Fantasma', slug: 'fantasma', attributes: [],
+    variations_data: [v(791, 'RD40070SM002', [])] });
+  const live = install([...withEnglish(), ghost]);
+  const before = clone(live);
+  // El fantasma tiene el SKU repetido desde antes: la simulación solo valida al cambiar SKU.
+  const review = await merge.reviewMerge({ log: () => {} });
+  const plan = review.plans.find((p) => p.style === 'RD40070');
+  const pool = fakePool();
+  await merge.applyMerge(review, { selected: new Set(['RD40070']), pool, runId: 1, log: () => {} });
+  assert.equal(plan.result.ok, false);
+  assert.match(plan.result.message, /RD40070SM002/);
+  assert.match(plan.result.message, /Se regresó todo/);
+  assert.equal(bySku(live, 'RD40070'), undefined, 'el modelo se borró');
+  assert.equal(pool.rows.length, 0, 'no queda nada que deshacer');
+  // Nada se fue a la papelera; el 001 recupera su SKU. El 002 sigue publicado, pero su SKU no se le
+  // pudo regresar (lo ocupa el fantasma, igual que en la tienda real) y el resultado lo dice.
+  for (const id of [700, 710]) assert.equal(live.find((p) => p.id === id).status, before.find((p) => p.id === id).status);
+  assert.deepEqual(live.find((p) => p.id === 700).variations_data.map((x) => `${x.sku}:${x.status}`), ['RD40070SM001:publish']);
+  assert.deepEqual(live.find((p) => p.id === 710).variations_data.map((x) => x.status), ['publish']);
+  assert.match(plan.result.message, /OJO: RD40070SM002 sigue publicado/);
 });

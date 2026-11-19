@@ -334,11 +334,24 @@ async function reviewMerge({ log = console.log, progress = () => {} } = {}) {
   // SKU del estilo ocupado (también en la papelera) y slugs ocupados (para la URL final).
   const styles = groups.filter((g) => !g.parent).map((g) => g.style);
   const taken = new Set((styles.length ? await store.fetchProductsBySkus(styles) : []).map((p) => key(p.sku)));
+  // Con WPML, las traducciones en inglés también ocupan SKU (la API normal no las muestra).
+  const sourceSkus = uniq(groups.flatMap((g) => g.items.map((i) => i.sku)));
+  const english = await store.fetchTranslationsBySkus([...styles, ...sourceSkus], 'en').catch(() => []);
+  const ownIds = new Set(ids);
+  const englishSkus = new Set(english.filter((p) => !ownIds.has(p.id)).map((p) => key(p.sku)));
+  for (const s of styles) if (englishSkus.has(key(s))) taken.add(key(s));
   const slugsTaken = new Set(lite.map((p) => (p.permalink || '').replace(/\/$/, '').split('/').pop()).filter(Boolean));
 
   const ctx = { products, variations, sizes, colors, taken, globals: { color: findGlobal('color'), talla: findGlobal('talla') } };
   const plans = groups.map((g) => planGroup(g, ctx));
-  for (const p of plans) p.url = finalUrl(p, p.modelName, slugsTaken);
+  for (const p of plans) {
+    p.url = finalUrl(p, p.modelName, slugsTaken);
+    const withEnglish = p.sources.filter((src) => englishSkus.has(key(src.sku))).map((src) => src.sku);
+    if (!withEnglish.length) continue;
+    p.warnings.push(p.mode === 'rename'
+      ? `Tiene versión en inglés: esa conserva el SKU anterior (${withEnglish.join(', ')}).`
+      : `Tienen versión en inglés (${withEnglish.join(', ')}): también va a la papelera y sus variaciones en inglés quedan sin SKU. ${p.mode === 'merge' ? 'El modelo nuevo queda' : 'Los colores que pasan quedan'} solo en español.`);
+  }
 
   return { reviewedAt: Date.now(), plans, slugsTaken, summary: summarize(plans) };
 }
@@ -369,31 +382,31 @@ const attributePayload = (list) => list.map(({ id, name, options, visible, varia
   ? { id, options, visible, variation, position }
   : { name, options, visible, variation, position }));
 
-// Manda a la papelera las fuentes (variaciones viejas y simples) liberando su SKU.
-// Si una falla, trashVariation/trashProduct regresan esa misma; las anteriores quedan marcadas en `e.trashed`.
-async function trashSources(plan) {
-  for (const e of plan.entries) {
-    if (e.source === 'variation') {
-      const snap = trash.snapshotVariation(e.variation, e.product);
-      await trash.trashVariation(snap, { clearSku: true });
-      e.trashed = snap;
-    } else {
-      const snap = await trash.snapshotProduct(e.product);
-      await trash.trashProduct(snap, { clearSku: true });
-      e.trashed = snap;
-    }
+// Traducciones en inglés (WPML) de los productos de la tienda que se van a tocar. La API
+// no dice cuáles son: se buscan por SKU en inglés (WPML copia el SKU a la traducción).
+async function englishVersions(products) {
+  const skus = uniq(products.map((p) => p.sku));
+  if (!skus.length) return new Map();
+  const ownIds = new Set(products.map((p) => p.id));
+  const found = (await store.fetchTranslationsBySkus(skus, 'en').catch(() => [])).filter((p) => !ownIds.has(p.id));
+  const out = new Map();
+  for (const en of found) {
+    const es = products.find((p) => key(p.sku) === key(en.sku));
+    if (es && !out.has(es.id)) out.set(es.id, en);
   }
+  return out;
 }
 
-async function restoreSource(e) {
-  if (e.source === 'variation') await trash.restoreVariation(e.trashed);
-  else await trash.restoreProduct(e.trashed);
-  e.trashed = null;
-}
+const put = (endpoint, data) => store.request('put', endpoint, data, undefined, 1);
+const sourceEndpoint = (e) => (e.source === 'variation' ? `products/${e.product.id}/variations/${e.variation.id}` : `products/${e.product.id}`);
 
 /**
- * Aplica un estilo. Las filas de respaldo se agregan a `backups` en el orden en que
- * "Deshacer" las necesita: lo creado primero, luego lo modificado y lo de la papelera.
+ * Aplica un estilo sin dejar nada a medias:
+ *   1. crea el modelo (o actualiza los atributos del padre) y sus variaciones SIN SKU;
+ *   2. pasa los SKU uno por uno (primero se le quita a la versión en inglés y a la anterior);
+ *      si alguno no se puede, se regresa todo el estilo y se borra lo creado;
+ *   3. solo entonces manda lo anterior a la papelera (también sus traducciones en inglés).
+ * Las filas de respaldo quedan en el orden que "Deshacer" necesita.
  */
 async function applyGroup(plan, name, { log }) {
   const backups = [];
@@ -409,9 +422,22 @@ async function applyGroup(plan, name, { log }) {
     return { result: done(true, `SKU cambiado de ${r.from} a ${r.to}`, { url: u.data.permalink || r.url, adminUrl: adminUrl(r.id) }), backups };
   }
 
+  // Versiones en inglés de lo que se mueve (sus SKU bloquean los nuevos).
+  const english = await englishVersions([...plan.trashProducts, ...plan.entries.filter((e) => e.source === 'simple').map((e) => e.product)]);
+  const englishVariations = new Map(); // SKU -> [{ parentId, id }]
+  for (const en of english.values()) {
+    if (en.type !== 'variable') continue;
+    for (const v of await store.fetchVariationsInLang(en.id, 'en').catch(() => [])) {
+      if (!v.sku) continue;
+      if (!englishVariations.has(key(v.sku))) englishVariations.set(key(v.sku), []);
+      englishVariations.get(key(v.sku)).push({ parentId: en.id, id: v.id });
+    }
+  }
+
   // 1. El modelo: se crea (o se le actualizan los atributos al padre existente).
   let modelId;
   let model;
+  const undoModel = [];
   if (plan.mode === 'merge') {
     const b = plan.base;
     const items = plan.trashProducts.concat(plan.entries.filter((e) => e.source === 'simple').map((e) => e.product));
@@ -441,87 +467,155 @@ async function applyGroup(plan, name, { log }) {
     log(`${plan.style}: creando el modelo "${name}"…`);
     const res = await store.batch('products', { create: [payload] });
     const c = res.create[0];
-    if (!c.ok) return { result: done(false, `No se pudo crear el modelo: ${c.error}`), backups };
+    if (!c.ok) return { result: done(false, `No se pudo crear el modelo: ${c.error}. No se cambió nada.`), backups };
     model = c.data;
     modelId = model.id;
-    backups.push({ kind: 'product', action: 'create', wooId: modelId, sku: plan.style, after: { date_modified: model.date_modified || null } });
+    undoModel.push(() => store.request('delete', `products/${modelId}`, { force: true }, undefined, 1));
   } else {
     model = plan.parent;
     modelId = model.id;
     const res = await store.batch('products', { update: [{ id: modelId, attributes: attributePayload(plan.attributes) }] });
     const u = res.update[0];
-    if (!u.ok) return { result: done(false, `No se pudieron actualizar los atributos de ${model.sku}: ${u.error}`), backups };
+    if (!u.ok) return { result: done(false, `No se pudieron actualizar los atributos de ${model.sku}: ${u.error}. No se cambió nada.`), backups };
     backups.push({ kind: 'product', action: 'update', wooId: modelId, sku: model.sku, fields: ['attributes'], before: { attributes: pick(model, 'attributes') }, after: { attributes: pick(u.data, 'attributes') } });
+    undoModel.push(() => put(`products/${modelId}`, { attributes: attributePayload(pick(model, 'attributes')) }));
     // Sus variaciones sin color (o sin talla) reciben el que les toca.
     const fixes = plan.parentFixes.filter((f) => f.needsUpdate);
     if (fixes.length) {
       const fr = await store.batch(`products/${modelId}/variations`, { update: fixes.map((f) => ({ id: f.variation.id, attributes: variationAttrs(f, plan) })) });
       fixes.forEach((f, i) => {
         const r = fr.update[i];
-        if (r.ok) backups.push({ kind: 'variation', action: 'update', wooId: f.variation.id, parentId: modelId, sku: f.variation.sku, fields: ['attributes'], before: { attributes: pick(f.variation, 'attributes') }, after: { attributes: pick(r.data, 'attributes') } });
-        else log(`${plan.style}: no se pudo poner color/talla a ${f.variation.sku}: ${r.error}`);
+        if (!r.ok) return log(`${plan.style}: no se pudo poner color/talla a ${f.variation.sku}: ${r.error}`);
+        backups.push({ kind: 'variation', action: 'update', wooId: f.variation.id, parentId: modelId, sku: f.variation.sku, fields: ['attributes'], before: { attributes: pick(f.variation, 'attributes') }, after: { attributes: pick(r.data, 'attributes') } });
+        undoModel.push(() => put(`products/${modelId}/variations/${f.variation.id}`, { attributes: pick(f.variation, 'attributes') }));
       });
     }
   }
+  const rollbackModel = async () => {
+    for (const fn of undoModel.reverse()) await fn().catch((e) => log(`${plan.style}: no se pudo regresar el modelo: ${e.message}`));
+    backups.length = 0;
+  };
 
-  // 2. Las fuentes a la papelera (libera sus SKU) y se crean como variaciones del modelo.
-  try {
-    await trashSources(plan);
-  } catch (error) {
-    // Se regresa también lo que ya se había mandado a la papelera, y se borra el modelo recién creado.
-    for (const e of plan.entries.filter((x) => x.trashed)) await restoreSource(e).catch(() => {});
-    if (plan.mode === 'merge') {
-      const removed = await store.request('delete', `products/${modelId}`, { force: true }, undefined, 1).then(() => true).catch(() => false);
-      if (removed) backups.length = 0;
-    }
-    return { result: done(false, `No se pudo mandar a la papelera lo anterior: ${error.message}. No se movió nada.`), backups };
-  }
+  // 2a. Las variaciones nuevas, sin SKU (así no chocan con nada).
   log(`${plan.style}: creando ${plan.entries.length} variación(es)…`);
-  const res = await store.batch(`products/${modelId}/variations`, { create: plan.entries.map((e) => variationPayload(e, variationAttrs(e, plan))) });
-  const failed = [];
-  plan.entries.forEach((e, i) => {
-    const r = res.create[i];
-    if (r.ok) {
-      e.newId = r.data.id;
-      backups.push({ kind: 'variation', action: 'create', wooId: r.data.id, parentId: modelId, sku: e.sku, after: { date_modified: r.data.date_modified || null } });
-    } else {
-      failed.push({ e, error: r.error });
+  const res = await store.batch(`products/${modelId}/variations`, { create: plan.entries.map((e) => ({ ...variationPayload(e, variationAttrs(e, plan)), sku: '' })) });
+  plan.entries.forEach((e, i) => { e.newId = res.create[i].ok ? res.create[i].data.id : null; });
+  const deleteCreated = async () => {
+    if (plan.mode === 'merge') return; // se borran con el modelo
+    for (const e of plan.entries.filter((x) => x.newId)) {
+      await store.request('delete', `products/${modelId}/variations/${e.newId}`, { force: true }, undefined, 1).catch(() => {});
     }
-  });
-  // Lo que no se pudo crear regresa a como estaba.
-  for (const { e } of failed) await restoreSource(e).catch((err) => log(`OJO: ${e.sku} quedó en la papelera sin SKU (${err.message}). Restáuralo desde WordPress y ponle de nuevo el SKU.`));
-  // (Se respaldan después de sus productos: "Deshacer" primero saca de la papelera al producto y luego a sus variaciones.)
-  const sourceRows = plan.entries.filter((x) => x.trashed).map((e) => (e.source === 'variation'
-    ? { kind: 'variation', action: 'delete', wooId: e.variation.id, parentId: e.product.id, sku: e.sku, before: { versions: e.trashed } }
-    : { kind: 'product', action: 'delete', wooId: e.product.id, sku: e.sku, before: { versions: e.trashed } }));
+  };
+  const createFailed = plan.entries.map((e, i) => (e.newId ? null : `${e.sku} (${res.create[i].error})`)).filter(Boolean);
+  if (createFailed.length) {
+    await deleteCreated();
+    await rollbackModel();
+    plan.entries.forEach((e) => { e.newId = null; });
+    return { result: done(false, `No se pudieron crear las variaciones: ${createFailed.join('; ')}. Se regresó todo; no se cambió nada.`), backups };
+  }
 
-  // 3. Los productos por color que quedaron vacíos, a la papelera.
+  // 2b. Los SKU pasan uno por uno: se liberan (versión en inglés y la anterior) y se ponen en la nueva.
+  const englishCleared = [];
+  let failure = null;
+  for (const e of plan.entries) {
+    try {
+      for (const en of englishVariations.get(key(e.sku)) || []) {
+        await put(`products/${en.parentId}/variations/${en.id}`, { sku: '' });
+        englishCleared.push(e.sku);
+      }
+      if (e.source === 'simple' && english.has(e.product.id)) {
+        await put(`products/${english.get(e.product.id).id}`, { sku: '' });
+        englishCleared.push(e.sku);
+      }
+      await put(sourceEndpoint(e), { sku: '' });
+      e.skuFreed = true;
+      await put(`products/${modelId}/variations/${e.newId}`, { sku: e.sku });
+      e.skuMoved = true;
+    } catch (error) {
+      failure = `${e.sku}: ${error.response?.data?.message || error.message}`;
+      break;
+    }
+  }
+  if (failure) {
+    // Todo el estilo regresa: las nuevas sin SKU, y las anteriores con el suyo.
+    for (const e of plan.entries.filter((x) => x.skuMoved)) await put(`products/${modelId}/variations/${e.newId}`, { sku: '' }).catch(() => {});
+    const lost = [];
+    for (const e of plan.entries.filter((x) => x.skuFreed)) {
+      await put(sourceEndpoint(e), { sku: e.sku }).catch(() => lost.push(e.sku));
+    }
+    await deleteCreated();
+    await rollbackModel();
+    plan.entries.forEach((e) => { e.newId = null; });
+    const note = [
+      lost.length ? ` OJO: ${lost.join(', ')} sigue publicado pero quedó sin SKU (algo invisible lo ocupa): regenera las tablas de búsqueda de WooCommerce y pónselo a mano.` : '',
+      englishCleared.length ? ` Las versiones en inglés de ${uniq(englishCleared).join(', ')} quedaron sin SKU propio.` : '',
+    ].join('');
+    return { result: done(false, `No se pudo pasar el SKU ${failure}. Se regresó todo como estaba (si es "duplicado", regenera las tablas de búsqueda de WooCommerce y vuelve a intentar).${note}`), backups };
+  }
+  for (const e of plan.entries) backups.push({ kind: 'variation', action: 'create', wooId: e.newId, parentId: modelId, sku: e.sku, after: { date_modified: null } });
+
+  // 3. Lo anterior a la papelera (ya sin SKU que estorbe). Para "Deshacer" se guarda con su SKU original.
+  const productRows = [];
+  const sourceRows = [];
+  const trashWarnings = [];
+  const trashEnglish = async (esProduct) => {
+    const en = english.get(esProduct.id);
+    if (!en) return;
+    // Sin `sku`: al restaurarla no se le pone (lo tiene la versión en español).
+    const snap = [{ id: en.id, lang: 'en', status: en.status, slug: en.slug, variations: [] }];
+    try {
+      await trash.trashProduct(snap);
+      productRows.push({ kind: 'product', action: 'delete', wooId: en.id, sku: en.sku, before: { versions: snap } });
+    } catch (error) {
+      trashWarnings.push(`la versión en inglés de ${esProduct.sku} (${error.message})`);
+    }
+  };
+  for (const e of plan.entries) {
+    try {
+      if (e.source === 'variation') {
+        const snap = trash.snapshotVariation(e.variation, e.product);
+        await trash.trashVariation(snap);
+        sourceRows.push({ kind: 'variation', action: 'delete', wooId: e.variation.id, parentId: e.product.id, sku: e.sku, before: { versions: snap } });
+      } else {
+        const snap = await trash.snapshotProduct(e.product);
+        snap[0].sku = e.sku;
+        await trash.trashProduct(snap);
+        productRows.push({ kind: 'product', action: 'delete', wooId: e.product.id, sku: e.sku, before: { versions: snap } });
+        await trashEnglish(e.product);
+      }
+    } catch (error) {
+      trashWarnings.push(`${e.sku} (${error.message})`);
+    }
+  }
   for (const p of plan.trashProducts) {
-    const stillThere = plan.entries.some((e) => e.source === 'variation' && e.product.id === p.id && !e.newId);
-    if (stillThere) continue;
     try {
       const snap = await trash.snapshotProduct(p);
       await trash.trashProduct(snap);
-      backups.push({ kind: 'product', action: 'delete', wooId: p.id, sku: p.sku, before: { versions: snap } });
+      productRows.push({ kind: 'product', action: 'delete', wooId: p.id, sku: p.sku, before: { versions: snap } });
+      await trashEnglish(p);
     } catch (error) {
-      log(`${plan.style}: no se pudo mandar a la papelera ${p.sku}: ${error.message}`);
+      trashWarnings.push(`${p.sku} (${error.message})`);
     }
   }
-  backups.push(...sourceRows);
+  // "Deshacer" saca primero de la papelera los productos y luego sus variaciones.
+  backups.push(...productRows, ...sourceRows);
 
-  // Fecha final del modelo (crear variaciones la cambia): "Deshacer" la usa para saber si alguien lo tocó después.
+  // Fecha final del modelo y de sus variaciones: "Deshacer" la usa para saber si alguien los tocó después.
   if (plan.mode === 'merge') {
     const [fresh] = await store.fetchProductsByIds([modelId]).catch(() => []);
-    if (fresh) {
-      backups[0].after.date_modified = fresh.date_modified;
-      model = fresh;
-    }
+    if (fresh) model = fresh;
+    backups.unshift({ kind: 'product', action: 'create', wooId: modelId, sku: plan.style, after: { date_modified: model.date_modified || null } });
+  } else {
+    const fresh = await store.fetchVariationsByIds(modelId, plan.entries.map((e) => e.newId)).catch(() => []);
+    for (const row of backups.filter((b) => b.action === 'create')) row.after.date_modified = fresh.find((v) => v.id === row.wooId)?.date_modified || null;
   }
-  const moved = plan.entries.filter((e) => e.newId).length;
-  const message = failed.length
-    ? `Se movieron ${moved} de ${plan.entries.length} variación(es). Fallaron: ${failed.map((f) => `${f.e.sku} (${f.error})`).join('; ')}`
-    : `${plan.mode === 'merge' ? 'Modelo creado' : `Pasaron a ${model.sku}`} con ${moved} variación(es) nueva(s)`;
-  return { result: done(!failed.length, message, { url: model.permalink || null, adminUrl: adminUrl(modelId), moved, newId: plan.mode === 'merge' ? modelId : null }), backups };
+  const moved = plan.entries.length;
+  const extras = [
+    trashWarnings.length ? `No se pudo mandar a la papelera: ${trashWarnings.join('; ')}.` : '',
+    englishCleared.length ? `Las versiones en inglés quedaron en la papelera.` : '',
+  ].filter(Boolean).join(' ');
+  const message = `${plan.mode === 'merge' ? 'Modelo creado' : `Pasaron a ${model.sku}`} con ${moved} variación(es) nueva(s).${extras ? ` ${extras}` : ''}`;
+  return { result: done(true, message, { url: model.permalink || null, adminUrl: adminUrl(modelId), moved, newId: plan.mode === 'merge' ? modelId : null }), backups };
 }
 
 /** Paso 2: aplica los estilos elegidos (`selected`) con su nombre (`names`). Guarda el respaldo en `pool`. */

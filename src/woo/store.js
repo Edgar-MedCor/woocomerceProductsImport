@@ -114,6 +114,20 @@ async function fetchVariableProducts() {
   return getAll('products', { type: 'variable', status: 'any', context: 'edit', _fields: 'id,sku,name,status,attributes,variations,permalink', ...lang() });
 }
 
+// Traducciones (WPML) de productos por SKU: las del idioma `lang` con esos SKU. Sin WPML,
+// el parámetro lang se ignora y vuelven los mismos productos (el que llama los descarta por ID).
+async function fetchTranslationsBySkus(skus, lang = 'en') {
+  const out = [];
+  for (const part of chunk([...new Set(skus)], 50)) {
+    out.push(...await getAll('products', { sku: part.join(','), status: 'any', context: 'edit', lang }));
+  }
+  return out;
+}
+
+async function fetchVariationsInLang(parentId, lang = 'en') {
+  return getAll(`products/${parentId}/variations`, { context: 'edit', lang });
+}
+
 async function createTerm(taxonomyEndpoint, data) {
   const res = await request('post', taxonomyEndpoint, data);
   return res.data;
@@ -148,5 +162,5 @@ async function batch(endpoint, { create = [], update = [] }, onBatch = () => {})
 }
 
 module.exports = {
-  request, fetchTaxonomies, fetchProductsByIds, fetchVariationsByIds, fetchProductsBySkus, fetchAllVariations, fetchProductsAllLanguages, fetchProductsLite, fetchProductsForOrphans, fetchVariationSkus, fetchProductsWithStock, fetchVariableProducts, createTerm, batch,
+  request, fetchTaxonomies, fetchProductsByIds, fetchVariationsByIds, fetchProductsBySkus, fetchAllVariations, fetchProductsAllLanguages, fetchProductsLite, fetchProductsForOrphans, fetchVariationSkus, fetchProductsWithStock, fetchVariableProducts, fetchTranslationsBySkus, fetchVariationsInLang, createTerm, batch,
 };

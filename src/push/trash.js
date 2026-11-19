@@ -55,7 +55,8 @@ async function trashProduct(snapshot, { clearSku = false } = {}) {
 
 async function restoreProduct(snapshot) {
   for (const v of snapshot) {
-    await store.request('put', `products/${v.id}`, { status: v.status, slug: v.slug, sku: v.sku }, undefined, 1);
+    // Sin `sku` en el respaldo (traducción de WPML) no se toca: el SKU lo tiene la versión principal.
+    await store.request('put', `products/${v.id}`, { status: v.status, slug: v.slug, ...(v.sku !== undefined ? { sku: v.sku } : {}) }, undefined, 1);
     // Las que ya estaban en la papelera (p. ej. pasaron a otro producto) se quedan como están.
     const back = v.variations.filter((x) => x.status !== 'trash');
     if (back.length) {
