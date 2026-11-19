@@ -247,7 +247,7 @@
             <h2>Variantes sueltas</h2>
             <span id="orphUpdated" class="muted"></span>
           </div>
-          <p class="muted">Productos simples cuyo SKU tiene forma de variación (estilo + talla + color), agrupados por estilo. Para convertirlos, en el Excel cambia el Tipo de cada fila a "Variación" y escribe el estilo en "SKU padre". Si el padre no existe, agrega antes una fila Variable con ese SKU; si existe como Simple, cámbiale el Tipo a "Variable".</p>
+          <p class="muted">Lo correcto es un solo producto Variable por modelo (SKU del estilo) con todos sus colores y tallas. Aquí aparecen, agrupados por estilo, los productos simples con SKU de variación (estilo + talla + color) y los Variables armados por color (SKU estilo + color, con solo sus tallas). Para corregirlos en el Excel: si el Variable del modelo no existe, agrégalo (o cambia a "Variable" el Tipo si existe como Simple); a cada simple cámbiale el Tipo a "Variación" y a cada variación escribe el estilo en "SKU padre"; al final marca "Eliminar" los Variables por color que quedan vacíos.</p>
           <div class="plan-actions">
             <button id="orphRefreshBtn" class="secondary">Actualizar reporte</button>
           </div>
