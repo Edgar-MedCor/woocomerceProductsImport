@@ -260,6 +260,10 @@ details > summary:hover { color: var(--primary); }
 .manual-sales .table-wrap { max-height: 360px; }
 .manual-sales td:first-child { text-align: center; }
 .manual-sales input[type=checkbox] { width: 18px; height: 18px; }
+#mergeBox .table-wrap { max-height: 480px; }
+#mergeBox input[type=text] { width: 100%; min-width: 220px; }
+#mergeBox .merge-url { font-size: 13px; word-break: break-all; }
+.merge-card { border-top: 3px solid var(--run); }
 
 /* ---------- Usuarios, permisos y casillas ---------- */
 .check { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 500; }

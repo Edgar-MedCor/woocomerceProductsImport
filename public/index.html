@@ -142,6 +142,21 @@
                 </table>
               </div>
             </div>
+            <div id="mergeBox" class="manual-sales hidden">
+              <h3>Estilos a corregir</h3>
+              <p class="muted" id="mergeHelp"></p>
+              <div class="plan-actions" id="mergeActions">
+                <button type="button" id="mergeAll" class="secondary">Marcar todos</button>
+                <button type="button" id="mergeNone" class="secondary">Desmarcar todos</button>
+                <span id="mergeCount" class="muted"></span>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead><tr><th>Corregir</th><th>Estilo</th><th>Qué pasa</th><th>Nombre del modelo</th><th>URL final</th></tr></thead>
+                  <tbody id="mergeBody"></tbody>
+                </table>
+              </div>
+            </div>
             <div class="plan-actions">
               <button id="pushBtn" class="hidden"></button>
               <a id="jobExcelLink" class="button secondary hidden" target="_blank" rel="noopener">Abrir Excel</a>
@@ -263,6 +278,13 @@
           </div>
           <div class="table-wrap"><table class="small-table"><thead><tr><th>Estilo / padre</th><th>Productos sueltos</th></tr></thead><tbody id="orphBody"></tbody></table></div>
         </div>
+
+        <div class="card merge-card" data-perm="merge">
+          <h2>Juntar modelos en la tienda</h2>
+          <p class="muted">Corrige en la tienda los estilos de esta lista: si tienen varios colores se crea un producto Variable nuevo por modelo (SKU del estilo) con todos sus colores y tallas, y los productos anteriores van a la papelera; si ya existe el Variable del estilo, los colores sueltos pasan a él; si tienen un solo color, solo se les cambia el SKU al del estilo. Primero muestra cómo quedaría cada uno, con su URL final; nada se cambia hasta que confirmes, y se puede deshacer desde el Historial.</p>
+          <button id="mergeReviewBtn" class="secondary">Revisar cómo quedarían</button>
+        </div>
+        <div class="job-slot" data-perm="merge"></div>
       </section>
 
       <!-- Historial -->

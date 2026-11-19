@@ -17,6 +17,7 @@ const stockFiles = require('../../stockprice/files');
 const { buildStockReport } = require('../../stockprice/report');
 const { loadLinks, saveLink, removeLink } = require('../../photos/links');
 const orphans = require('../../report/orphans');
+const merge = require('../../commands/merge');
 const { TYPE } = require('../../push/fields');
 const { pendingStore } = require('../pending');
 
@@ -155,6 +156,65 @@ router.get('/orphans', requirePermission('orphans'), (_req, res) => {
 router.post('/orphans/refresh', requirePermission('orphans'), (_req, res) => {
   orphans.refreshReport();
   res.status(202).json({ ok: true, ...orphans.getReport() });
+});
+
+// ---------- Juntar modelos: corrige las variantes sueltas en la tienda (solo administrador) ----------
+let pendingMerge = null;
+
+router.post('/orphans/merge/review', requirePermission('merge'), async (req, res, next) => {
+  try {
+    const user = req.user;
+    const job = await jobs.start('merge-review', user, async ({ log, progress }) => {
+      const review = await merge.reviewMerge({ log, progress });
+      pendingMerge = { userId: user.id, review };
+      return { summary: review.summary, details: merge.publicMerge(review) };
+    });
+    res.status(202).json({ ok: true, job });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/orphans/merge/apply', requirePermission('merge'), async (req, res, next) => {
+  try {
+    const pending = pendingMerge;
+    if (!pending || String(pending.userId) !== String(req.user.id)) {
+      return res.status(400).json({ ok: false, message: 'Primero haz "Revisar cómo quedarían".' });
+    }
+    if (Date.now() - pending.review.reviewedAt > REVIEW_TTL_MS) {
+      pendingMerge = null;
+      return res.status(400).json({ ok: false, message: 'La revisión tiene más de 30 minutos. Vuelve a revisar.' });
+    }
+    const { styles, names = {} } = req.body || {};
+    const known = new Set(pending.review.plans.map((p) => p.style));
+    if (!Array.isArray(styles) || !styles.length || styles.some((s) => typeof s !== 'string' || !known.has(s))) {
+      return res.status(400).json({ ok: false, message: 'Elige al menos un estilo de la revisión.' });
+    }
+    if (typeof names !== 'object' || Array.isArray(names)
+      || Object.entries(names).some(([k, v]) => !known.has(k) || typeof v !== 'string' || v.trim().length < 3 || v.length > 200)) {
+      return res.status(400).json({ ok: false, message: 'Cada nombre de modelo debe tener entre 3 y 200 caracteres.' });
+    }
+    pendingMerge = null;
+
+    const job = await jobs.start('merge', req.user, async ({ runId, log, progress }) => {
+      pendingReviews.invalidate(`${nameOf(req.user)} juntó modelos en la tienda`);
+      const selected = new Set(styles);
+      const result = await merge.applyMerge(pending.review, { selected, names, pool, runId, log, progress });
+      for (const plan of pending.review.plans.filter((p) => p.result)) {
+        await pool.query(
+          'INSERT INTO change_log (run_id, woo_id, sku, field, old_value, new_value, result, error, url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          [runId, plan.result.newId || plan.rename?.id || plan.parent?.id || null, plan.style, 'Juntar modelo',
+            plan.sources.map((s) => s.sku).join(', '), `${plan.chosenName} (${plan.result.url || 'sin URL'})`,
+            plan.result.ok ? 'ok' : 'error', plan.result.ok ? null : plan.result.message, plan.result.url],
+        ).catch((e) => console.error('No se pudo guardar el historial de juntar modelos:', e.message));
+      }
+      orphans.refreshReport(); // el reporte de variantes sueltas se pone al día solo
+      return { summary: result.summary, details: merge.publicMerge(pending.review, { withResults: true, selected }) };
+    });
+    res.status(202).json({ ok: true, job });
+  } catch (error) {
+    next(error);
+  }
 });
 
 router.post('/pull', requirePermission('pull'), async (req, res, next) => {
@@ -537,7 +597,7 @@ async function saveChangeLog(runId, plan) {
 async function undoableRunId() {
   const { rows } = await pool.query(
     `SELECT r.id, r.undone_at, EXISTS (SELECT 1 FROM push_backups b WHERE b.run_id = r.id) AS has_backup
-     FROM sync_runs r WHERE r.type = 'push' AND r.status = 'success'
+     FROM sync_runs r WHERE r.type IN ('push', 'merge') AND r.status = 'success'
      ORDER BY r.started_at DESC LIMIT 1`,
   );
   const last = rows[0];

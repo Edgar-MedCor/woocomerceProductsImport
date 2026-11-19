@@ -285,6 +285,8 @@ const TYPE_LABEL = {
   'attrs-review': 'Revisar atributos',
   'attrs-fix': 'Corregir atributos',
   'stock-review': 'Revisar precios e inventario',
+  'merge-review': 'Revisar juntar modelos',
+  merge: 'Juntar modelos',
 };
 // Qué revisión habilita qué subida.
 const PUSH_STEP = {
@@ -305,6 +307,11 @@ const PUSH_STEP = {
     },
   },
   'attrs-review': { endpoint: '/sync/attributes/fix', pending: (s) => s['Productos a corregir'] || 0, label: (n) => `Corregir atributos de ${n} producto(s)` },
+  'merge-review': {
+    endpoint: '/sync/orphans/merge/apply',
+    pending: (s) => (s['Modelos nuevos (se juntan los colores)'] || 0) + (s['Estilos que pasan a su padre Variable'] || 0) + (s['Productos de un color (solo cambia el SKU)'] || 0),
+    label: () => `Corregir ${chosenStyles().length} estilo(s) en la tienda`,
+  },
 };
 const STATUS_LABEL = { running: 'En curso', success: 'Terminado', error: 'Con error' };
 
@@ -421,8 +428,36 @@ $('#reviewBtn').addEventListener('click', (e) => startJob('/sync/review', e.curr
 $('#photosReviewBtn').addEventListener('click', (e) => startJob('/sync/photos/review', e.currentTarget));
 $('#noPhotosReportBtn').addEventListener('click', (e) => startJob('/sync/photos/no-photos-report', e.currentTarget));
 $('#attrsReviewBtn').addEventListener('click', (e) => startJob('/sync/attributes/review', e.currentTarget));
+$('#mergeReviewBtn').addEventListener('click', (e) => startJob('/sync/orphans/merge/review', e.currentTarget));
 $('#pushBtn').addEventListener('click', async () => {
   const s = lastPlanJob?.details?.summary || {};
+  if (lastPlanJob?.type === 'merge-review') {
+    const styles = chosenStyles();
+    if (!styles.length) return toast('Marca al menos un estilo.', 'warning');
+    const groups = new Map((lastPlanJob.details.groups || []).map((g) => [g.style, g]));
+    const names = mergeNames.get(lastPlanJob.id) || new Map();
+    const bad = styles.find((st) => groups.get(st)?.mode === 'merge' && (names.get(st) ?? groups.get(st).name).trim().length < 3);
+    if (bad) return toast(`Escribe el nombre del modelo ${bad}.`, 'warning');
+    const count = (mode) => styles.filter((st) => groups.get(st)?.mode === mode).length;
+    const ok = await confirmModal({
+      title: 'Juntar modelos en la tienda',
+      tone: 'warning',
+      okText: 'Corregir en la tienda',
+      body: el('div', {},
+        el('p', {}, 'Los cambios se verán en la tienda en cuanto termine.'),
+        facts([
+          ['Modelos nuevos', count('merge') || null],
+          ['Pasan a su padre Variable', count('into-parent') || null],
+          ['Solo cambia el SKU', count('rename') || null],
+        ]),
+        el('p', { class: 'callout warning' }, 'Los productos por color y los simples que se juntan van a la papelera de WordPress y sus URLs dejan de funcionar. Todo se puede regresar con "Deshacer" desde el Historial (si nadie modifica los modelos nuevos antes).')),
+    });
+    if (ok) {
+      const body = { styles, names: Object.fromEntries(styles.filter((st) => groups.get(st)?.mode === 'merge' && names.has(st)).map((st) => [st, names.get(st).trim()])) };
+      startJob(PUSH_STEP['merge-review'].endpoint, $('#pushBtn'), body);
+    }
+    return;
+  }
   if (lastPlanJob?.type === 'attrs-review') {
     const ok = await confirmModal({
       title: 'Corregir atributos en la tienda',
@@ -497,6 +532,8 @@ function notifyJobEnd(job) {
     undo: 'La tienda quedó como antes de ese push.',
     'attrs-review': pending ? 'Revisa la lista y confirma para corregir los atributos.' : 'Todos los productos variables ya cumplen la regla.',
     'attrs-fix': 'Los atributos ya están corregidos. Haz "Traer de la tienda" para poner el Excel al día.',
+    'merge-review': pending ? 'Elige los estilos, revisa los nombres y confirma.' : 'No hay estilos por corregir.',
+    merge: 'Revisa el resultado de cada estilo y haz "Traer de la tienda" para poner el Excel al día.',
     'photos-report': 'Descárgalo con el botón "Descargar reporte (Excel)".',
   }[job.type] || '';
   toast(`${label}: terminado. ${next}`.trim(), 'success');
@@ -544,6 +581,7 @@ function renderJob(job) {
     $('#pullBtn').disabled = running;
     $('#reviewBtn').disabled = running;
     $('#attrsReviewBtn').disabled = running;
+    $('#mergeReviewBtn').disabled = running;
     $('#stockReviewBtn').disabled = running || !stockReady();
   }
   renderPlan(job);
@@ -608,7 +646,8 @@ function renderPlan(job) {
     $('#pushBtn').dataset.endpoint = step.endpoint;
   }
   renderManualSales(job, canPush);
-  $('#rowHead').textContent = job.type.startsWith('photos') ? 'Carpeta' : job.type.startsWith('attrs') ? 'ID' : 'Fila';
+  renderMergeBox(job, canPush);
+  $('#rowHead').textContent = job.type.startsWith('photos') ? 'Carpeta' : job.type.startsWith('attrs') ? 'ID' : job.type.startsWith('merge') ? '#' : 'Fila';
   $('#jobExcelLink').classList.toggle('hidden', !job.webUrl);
   if (job.webUrl) $('#jobExcelLink').href = job.webUrl;
 
@@ -707,6 +746,81 @@ $('#manualSalesAll').addEventListener('click', () => {
 $('#manualSalesNone').addEventListener('click', () => {
   saleChoices.set(lastPlanJob.id, new Set());
   renderManualSales(lastPlanJob, true);
+});
+
+// ---------- juntar modelos: qué estilos se corrigen y con qué nombre ----------
+const mergeChoices = new Map(); // jobId -> Set(estilo)
+const mergeNames = new Map(); // jobId -> Map(estilo -> nombre editado)
+const chosenStyles = () => [...(mergeChoices.get(lastPlanJob?.id) || [])];
+const MODE_LABEL = { merge: 'Modelo nuevo', 'into-parent': 'Pasa a su padre', rename: 'Solo cambia el SKU' };
+// Igual que el servidor (y WordPress): sin acentos, minúsculas y guiones.
+const slugify = (s) => String(s || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+function mergeUrl(group, name, taken) {
+  if (group.mode !== 'merge' || !group.urlBase) return group.url;
+  const base = slugify(name);
+  let slug = base;
+  for (let n = 2; taken.has(slug); n += 1) slug = `${base}-${n}`;
+  return `${group.urlBase}${slug}/`;
+}
+
+function renderMergeBox(job, editable) {
+  const groups = job?.type === 'merge-review' ? job.details?.groups || [] : [];
+  $('#mergeBox').classList.toggle('hidden', !groups.length);
+  if (!groups.length) return;
+  // Los que parecen productos distintos (nombres muy diferentes) empiezan sin marcar.
+  if (!mergeChoices.has(job.id)) mergeChoices.set(job.id, new Set(groups.filter((g) => g.ok && !g.doubt).map((g) => g.style)));
+  if (!mergeNames.has(job.id)) mergeNames.set(job.id, new Map());
+  const chosen = mergeChoices.get(job.id);
+  const names = mergeNames.get(job.id);
+  const taken = new Set(job.details.slugsTaken || []);
+  const withErrors = groups.filter((g) => !g.ok).length;
+  $('#mergeHelp').textContent = (editable
+    ? 'Desmarca los que no quieras tocar. En los modelos nuevos puedes cambiar el nombre: de él sale la URL.'
+    : 'Solo quien hizo la revisión puede elegir y confirmar.')
+    + (withErrors ? ` ${withErrors} estilo(s) tienen errores y no se pueden corregir aquí (ver la tabla de abajo).` : '');
+  $('#mergeActions').classList.toggle('hidden', !editable);
+  const update = () => {
+    $('#mergeCount').textContent = `${chosen.size} de ${groups.filter((g) => g.ok).length} estilos marcados`;
+    if (editable) $('#pushBtn').textContent = PUSH_STEP['merge-review'].label();
+  };
+  const rows = groups.map((g) => {
+    const box = el('input', { type: 'checkbox', 'aria-label': `Corregir ${g.style}` });
+    box.checked = chosen.has(g.style);
+    box.disabled = !editable || !g.ok;
+    box.addEventListener('change', () => {
+      if (box.checked) chosen.add(g.style);
+      else chosen.delete(g.style);
+      update();
+    });
+    const urlCell = el('td', { class: 'merge-url' });
+    const showUrl = (name) => {
+      const url = mergeUrl(g, name, taken);
+      urlCell.replaceChildren(url ? link(url, url.replace(/^https?:\/\/[^/]+/, '')) : '—');
+    };
+    let nameCell;
+    if (g.mode === 'merge' && editable && g.ok) {
+      const input = el('input', { type: 'text', value: names.get(g.style) ?? g.name, maxlength: 200, 'aria-label': `Nombre del modelo ${g.style}` });
+      input.addEventListener('input', () => { names.set(g.style, input.value); showUrl(input.value); });
+      nameCell = el('td', {}, input);
+    } else nameCell = el('td', {}, names.get(g.style) ?? g.name);
+    showUrl(names.get(g.style) ?? g.name);
+    return el('tr', { class: g.ok ? '' : 'muted' },
+      el('td', {}, box),
+      el('td', {}, el('strong', {}, g.style)),
+      el('td', { class: g.ok ? '' : 'err' }, g.ok ? MODE_LABEL[g.mode] : 'Con errores', g.warnings ? el('div', { class: 'conf' }, '⚠ revisar aviso') : null),
+      nameCell,
+      urlCell);
+  });
+  $('#mergeBody').replaceChildren(...rows);
+  update();
+}
+$('#mergeAll').addEventListener('click', () => {
+  mergeChoices.set(lastPlanJob.id, new Set((lastPlanJob?.details?.groups || []).filter((g) => g.ok).map((g) => g.style)));
+  renderMergeBox(lastPlanJob, true);
+});
+$('#mergeNone').addEventListener('click', () => {
+  mergeChoices.set(lastPlanJob.id, new Set());
+  renderMergeBox(lastPlanJob, true);
 });
 
 // Enlaces para consultar en la tienda lo que se creó o modificó.
@@ -949,6 +1063,13 @@ let orphTimer = null;
 
 async function loadOrphans() {
   if (!orphData) $('#orphBody').replaceChildren(loadingRow(2, 'Cargando el reporte…'));
+  // El administrador ve aquí la revisión / el resultado de "Juntar modelos".
+  if (can('merge')) {
+    api('/sync/current?lane=excel', { quiet: true }).then(({ current }) => {
+      renderJob(current);
+      if (current?.status === 'running') startPolling('excel');
+    }).catch(() => {});
+  }
   const { report, refreshing } = await api('/sync/orphans');
   orphData = report;
   renderOrphans(refreshing);
