@@ -99,6 +99,16 @@ async function fetchProductsWithStock() {
   return getAll('products', { status: 'any', _fields: 'id,sku,name,type,status,images,categories,attributes,variations,manage_stock,stock_quantity,stock_status', ...lang() });
 }
 
+// Todos los productos con sus atributos (reporte de variantes sueltas).
+async function fetchProductsForOrphans() {
+  return getAll('products', { status: 'any', _fields: 'id,sku,name,type,status,permalink,attributes', ...lang() });
+}
+
+// Solo SKU y atributos de las variaciones de un producto (ligero).
+async function fetchVariationSkus(parentId) {
+  return getAll(`products/${parentId}/variations`, { _fields: 'id,sku,status,attributes', ...lang() });
+}
+
 // Productos variables con lo necesario para revisar sus atributos.
 async function fetchVariableProducts() {
   return getAll('products', { type: 'variable', status: 'any', context: 'edit', _fields: 'id,sku,name,status,attributes,variations,permalink', ...lang() });
@@ -138,5 +148,5 @@ async function batch(endpoint, { create = [], update = [] }, onBatch = () => {})
 }
 
 module.exports = {
-  request, fetchTaxonomies, fetchProductsByIds, fetchVariationsByIds, fetchProductsBySkus, fetchAllVariations, fetchProductsAllLanguages, fetchProductsLite, fetchProductsWithStock, fetchVariableProducts, createTerm, batch,
+  request, fetchTaxonomies, fetchProductsByIds, fetchVariationsByIds, fetchProductsBySkus, fetchAllVariations, fetchProductsAllLanguages, fetchProductsLite, fetchProductsForOrphans, fetchVariationSkus, fetchProductsWithStock, fetchVariableProducts, createTerm, batch,
 };

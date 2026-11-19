@@ -84,7 +84,7 @@
           <div class="stock-files">
             <label class="file-pick">
               <span class="file-title">Archivo de precios</span>
-              <span class="muted small">ClaveCompleta y Precio (se redondea a pesos)</span>
+              <span class="muted small">ClaveCompleta y Precio (se redondea a pesos). Si trae PrecioDescuento, también se actualizan los descuentos.</span>
               <input type="file" id="pricesFile" accept=".xlsx">
               <span id="pricesStatus" class="file-status muted">Sin cargar</span>
             </label>
@@ -255,12 +255,13 @@
           <div class="tiles">
             <div class="tile warn"><span id="orphStyles">—</span><small>Estilos con variantes sueltas</small></div>
             <div class="tile err"><span id="orphProducts">—</span><small>Productos simples por revisar</small></div>
+            <div class="tile err"><span id="orphColorParents">—</span><small>Variables por color (deberían ser un solo modelo)</small></div>
             <div class="tile ok"><span id="orphWithParent">—</span><small>Estilos que ya tienen padre Variable</small></div>
           </div>
           <div class="filters">
             <input id="orphSearch" type="search" placeholder="Buscar estilo, SKU o nombre…">
           </div>
-          <div class="table-wrap"><table class="small-table"><thead><tr><th>Estilo / padre</th><th>Productos simples sueltos</th></tr></thead><tbody id="orphBody"></tbody></table></div>
+          <div class="table-wrap"><table class="small-table"><thead><tr><th>Estilo / padre</th><th>Productos sueltos</th></tr></thead><tbody id="orphBody"></tbody></table></div>
         </div>
       </section>
 

@@ -995,6 +995,7 @@ function renderOrphans(refreshing) {
   $('#orphStyles').textContent = d.totals.estilos;
   $('#orphProducts').textContent = d.totals.productos;
   $('#orphWithParent').textContent = d.totals.conPadreVariable;
+  $('#orphColorParents').textContent = d.totals.padresPorColor ?? 0;
   const q = $('#orphSearch').value.trim().toLowerCase();
   const list = d.groups.filter((g) => !q || [g.style, g.parent?.name, ...g.items.flatMap((i) => [i.sku, i.name])].join(' ').toLowerCase().includes(q));
   const rows = list.slice(0, 300).map((g) => el('tr', {},
@@ -1004,7 +1005,10 @@ function renderOrphans(refreshing) {
         ? [`Padre ${g.parent.type}: `, g.parent.url ? link(g.parent.url, g.parent.name) : g.parent.name, g.parent.type === 'Simple' ? ' (cámbialo a Variable)' : '']
         : `Sin padre: agrega una fila Variable con SKU ${g.style}`)),
     el('td', {}, el('ul', { class: 'orph-items' }, g.items.map((i) => el('li', {},
-      i.url ? link(i.url, i.sku) : i.sku, ` · talla ${i.talla} · color ${i.color} · ${i.status}`,
+      i.url ? link(i.url, i.sku) : i.sku,
+      i.kind === 'variable'
+        ? [' · ', el('strong', {}, `Variable del color ${i.color}`), ` con ${i.variaciones} variación(es) (tallas ${i.tallas.join(', ')}) · ${i.status}`]
+        : ` · simple · talla ${i.talla} · color ${i.color} · ${i.status}`,
       el('span', { class: 'muted' }, ` — ${i.name}`)))))));
   if (list.length > 300) rows.push(el('tr', {}, el('td', { colspan: 2, class: 'muted' }, `… y ${list.length - 300} estilos más (usa el buscador).`)));
   if (!list.length) rows.push(el('tr', {}, el('td', { colspan: 2, class: 'muted' }, 'Nada que mostrar.')));
@@ -1344,7 +1348,7 @@ async function uploadStockFile(kind, input, status) {
     status.replaceChildren(spinner(), ` Revisando ${file.name}…`);
     if (kind === 'prices') {
       stock.prices = true;
-      status.textContent = `✔ ${file.name}: ${data.summary.claves.toLocaleString('es-MX')} claves${data.summary.sinPrecio ? ` (${data.summary.sinPrecio} sin precio)` : ''}${data.summary.conDescuento !== undefined ? `, ${data.summary.conDescuento.toLocaleString('es-MX')} con descuento` : ''}`;
+      status.textContent = `✔ ${file.name}: ${data.summary.claves.toLocaleString('es-MX')} claves${data.summary.sinPrecio ? ` (${data.summary.sinPrecio} sin precio)` : ''}${data.summary.conDescuento !== undefined ? `, ${data.summary.conDescuento.toLocaleString('es-MX')} con descuento` : ' · sin columnas de descuento: el precio rebajado no se toca'}`;
     } else {
       stock.warehouses = data.warehouses;
       stock.categories = data.categories;

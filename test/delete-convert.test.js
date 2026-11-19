@@ -317,3 +317,26 @@ test('Juntar y deshacer: mismo SKU, precio, inventario y fotos en el producto nu
   assert.equal(back.status, 'publish');
   assert.equal(back.sku, 'RD49768S021', 'recupera su SKU');
 });
+
+test('Reporte de variantes sueltas: detecta Variables por color (SKU estilo+color con sus tallas como variaciones)', () => {
+  const { colorParentCandidates } = require('../src/report/orphans');
+  const products = [
+    { id: 10, type: 'variable', sku: 'RD300002', name: 'Chamarra negra', status: 'publish', attributes: [{ name: 'Talla', options: ['S', 'M'] }] },
+    { id: 11, type: 'variable', sku: 'RD300015', name: 'Chamarra roja', status: 'publish', attributes: [{ name: 'Talla', options: ['S'] }, { name: 'Color', options: ['Rojo'] }] },
+    { id: 12, type: 'variable', sku: 'RD400', name: 'Modelo bien armado', status: 'publish', attributes: [{ name: 'Talla', options: ['S'] }, { name: 'Color', options: ['Negro'] }] },
+    { id: 13, type: 'variable', sku: 'RD500', name: 'Modelo con varios colores', status: 'publish', attributes: [{ name: 'Color', options: ['Negro', 'Rojo'] }] },
+    { id: 14, type: 'simple', sku: 'RD300L002', name: 'Chamarra L suelta', status: 'publish' },
+  ];
+  const candidates = colorParentCandidates(products).map((p) => p.id);
+  assert.deepEqual(candidates, [10, 11, 12], 'el de varios colores no se consulta');
+  const variations = new Map([
+    [10, [{ sku: 'RD300S002' }, { sku: 'RD300M002' }]],
+    [11, [{ sku: 'RD300S015' }]],
+    [12, [{ sku: 'RD400S002' }]], // padre con SKU del estilo: está bien
+  ]);
+  const groups = findOrphans(products, variations);
+  assert.deepEqual(groups.map((g) => g.style), ['RD300'], 'RD400 no aparece: su SKU es el del modelo');
+  const items = groups[0].items.map((i) => [i.sku, i.kind, i.color, i.tallas || i.talla]);
+  assert.deepEqual(items, [['RD300002', 'variable', '002', ['S', 'M']], ['RD300015', 'variable', '015', ['S']], ['RD300L002', 'simple', '002', 'L']]);
+  assert.equal(groups[0].parent, null, 'falta el Variable RD300 del modelo');
+});

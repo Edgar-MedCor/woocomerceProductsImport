@@ -240,6 +240,8 @@ async function reviewStockPrice({ prices = null, sales = null, panelSales = new 
   plan.notes = [
     listNote('No vienen en el archivo de precios, su precio no se actualiza', report.sinPrecioEnArchivo),
     listNote('Vienen sin precio en el archivo, su precio no se actualiza', report.precioVacio),
+    prices && !sales ? 'El archivo de precios no trae las columnas de descuento (PorcentajeDescuento / PrecioDescuento): solo se actualiza el precio normal; los precios rebajados de la tienda no se tocan.' : null,
+    prices && sales && !report.manualSales.length ? 'No hay descuentos puestos a mano en la tienda que falten en el archivo: no hay nada que elegir.' : null,
     prices && sales ? 'El archivo de precios trae descuentos: se pone el precio rebajado a los que tienen descuento (de inmediato, sin fechas). Los descuentos que puso el panel y ya no vienen en el archivo se quitan; los que se pusieron a mano en la tienda no se tocan, a menos que elijas regresarlos a precio normal en la lista de abajo.' : null,
     listNote('Se quita el precio rebajado', report.quitados.map((q) => `${q.sku} (${q.why.toLowerCase()})`), 40),
     listNote('No vienen en el archivo de inventario, su inventario no se actualiza', report.sinInventarioEnArchivo),
