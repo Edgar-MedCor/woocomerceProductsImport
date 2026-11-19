@@ -135,29 +135,68 @@ test('Precios con descuento: lee PrecioDescuento redondeado; sin descuento o no 
   assert.equal(old.sales, null, 'archivo sin columna de descuento: no se toca el precio rebajado');
 });
 
-test('Revisión con descuentos: pone el rebajado a los que tienen descuento, lo quita a los que no, y sale en el reporte', async () => {
+test('Descuentos regla C: pone los del archivo; quita solo los que puso el panel; los puestos a mano se conservan y se listan con sus fechas', async () => {
   const { buildStockReport } = require('../src/stockprice/report');
+  const { liveManualSales } = require('../src/commands/push');
   const catalog = baseCatalog();
-  catalog[0].variations_data.find((v) => v.sku === 'RD45747S001').sale_price = '500'; // tenía rebaja y ya no
+  const v = (sku) => catalog[0].variations_data.find((x) => x.sku === sku);
+  v('RD45747S001').sale_price = '500'; // lo puso el panel antes y ya no viene en el archivo
+  Object.assign(v('RD45747M002'), { sale_price: '450', date_on_sale_from: '2026-11-13T00:00:00', date_on_sale_to: '2026-11-17T23:59:59' }); // a mano (Buen Fin)
+  v('RD45747M001').sale_price = '650'; // a mano, pero el precio normal nuevo queda en 600
   mockStore(catalog);
   const excel = await excelFrom(catalog);
   const { prices, sales } = await parsePrices(await discountFile([
-    [1, 'RD45747', 'RD45747S002', 'p', 'DAMA', 698.9968, 30, 489.2978], // nuevo descuento
-    [1, 'RD45747', 'RD45747S001', 'p', 'DAMA', 698.9968, 0, 698.9968], // se quita el rebajado
-    [1, 'RD45747', 'RD45747M002', 'p', 'DAMA', 698.9968, 0, 698.9968], // sin cambios
+    [1, 'RD45747', 'RD45747S002', 'p', 'DAMA', 698.9968, 30, 489.2978], // descuento nuevo del archivo
+    [1, 'RD45747', 'RD45747S001', 'p', 'DAMA', 698.9968, 0, 698.9968],
+    [1, 'RD45747', 'RD45747M002', 'p', 'DAMA', 698.9968, 0, 698.9968],
+    [1, 'RD45747', 'RD45747M001', 'p', 'DAMA', 600, 0, 600],
+  ]));
+  const panelSales = new Map([['103', 500]]); // ID de RD45747S001
+  const { rows, report, edits } = stockPriceRows(excel, { prices, sales, panelSales });
+  const plan = await buildPlan({ ...excel, rows }, { canCreate: false, canDelete: false });
+  const changed = Object.fromEntries(plan.items.filter((i) => i.changes.length).map((i) => [i.data.sku, Object.fromEntries(i.changes.map((c) => [c.key, c.to]))]));
+  assert.equal(changed.RD45747S002.salePrice, 489, 'descuento del archivo');
+  assert.ok(['', null].includes(changed.RD45747S001.salePrice), 'lo había puesto el panel: se quita');
+  assert.ok(['', null].includes(changed.RD45747M001.salePrice), 'quedaba mayor al precio normal nuevo: se quita');
+  assert.equal(changed.RD45747M002, undefined, 'el puesto a mano no se toca');
+  assert.ok(plan.items.every((i) => !i.errors.length));
+  assert.deepEqual(report.quitados.map((q) => q.sku).sort(), ['RD45747M001', 'RD45747S001']);
+  assert.ok(rows.find((r) => r.sku === 'RD45747S002')._clearSaleDates, 'el del archivo aplica ya, sin fechas');
+
+  report.manualSales = await liveManualSales(report.manualSales);
+  assert.deepEqual(report.manualSales.map((m) => [m.sku, m.regular, m.sale, m.from, m.to, m.parentId]), [['RD45747M002', 699, 450, '2026-11-13', '2026-11-17', 100]]);
+
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(await buildStockReport(plan, report));
+  assert.deepEqual(wb.getWorksheet('Con descuento').getRow(2).values.slice(1, 6), ['RD45747S002', 'Pantalon Amplio', 699, 30, 489]);
+  assert.deepEqual(wb.getWorksheet('Descuentos a mano').getRow(2).values.slice(1, 8), ['RD45747M002', 'Pantalon Amplio', 699, 450, 36, '2026-11-13', '2026-11-17']);
+  assert.ok(edits.some((e) => e.key === 'salePrice' && e.value === 489));
+});
+
+test('Descuentos a mano: el usuario elige cuáles regresan a precio normal al subir (y se quitan sus fechas)', async () => {
+  const { applySaleChoices, liveManualSales } = require('../src/commands/push');
+  const { applyPlan } = require('../src/push/apply');
+  const catalog = baseCatalog();
+  Object.assign(catalog[0].variations_data.find((x) => x.sku === 'RD45747M002'), { sale_price: '450', date_on_sale_from: '2026-11-13T00:00:00', date_on_sale_to: '2026-11-17T23:59:59' });
+  Object.assign(catalog[1], { sale_price: '399' }); // bolsa simple, a mano
+  const live = mockStore(catalog);
+  const excel = await excelFrom(catalog);
+  const { prices, sales } = await parsePrices(await discountFile([
+    [1, 'RD45747', 'RD45747M002', 'p', 'DAMA', 698.9968, 0, 698.9968],
+    [1, 'BOL', 'BOL48901OS015', 'b', 'BOLSAS', 499, 0, 499],
   ]));
   const { rows, report, edits } = stockPriceRows(excel, { prices, sales });
   const plan = await buildPlan({ ...excel, rows }, { canCreate: false, canDelete: false });
-  const changed = Object.fromEntries(plan.items.filter((i) => i.changes.length).map((i) => [i.data.sku, i.changes.map((c) => [c.key, c.to])]));
-  assert.deepEqual(Object.keys(changed).sort(), ['RD45747S001', 'RD45747S002']);
-  assert.deepEqual(changed.RD45747S002.find((c) => c[0] === 'salePrice'), ['salePrice', 489]);
-  assert.ok(changed.RD45747S001.some((c) => c[0] === 'salePrice' && (c[1] === null || c[1] === '')));
-  assert.ok(plan.items.every((i) => !i.errors.length));
-  assert.deepEqual(report.descuentos.map((d) => [d.sku, d.regular, d.sale, d.percent]), [['RD45747S002', 699, 489, 30]]);
-  assert.ok(edits.some((e) => e.key === 'salePrice' && e.value === 489));
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(await buildStockReport(plan, report));
-  assert.ok(wb.getWorksheet('Con descuento'));
-  const r = wb.getWorksheet('Con descuento').getRow(2).values.slice(1);
-  assert.deepEqual(r.slice(0, 5), ['RD45747S002', 'Pantalon Amplio', 699, 30, 489]);
+  report.manualSales = await liveManualSales(report.manualSales);
+  assert.deepEqual(report.manualSales.map((m) => m.sku).sort(), ['BOL48901OS015', 'RD45747M002']);
+  const reviewed = { plan, excel, edits, report };
+  assert.equal(applySaleChoices(reviewed, [102, 999]), 1, 'solo los de la lista; el ID 999 se ignora');
+  const item = plan.items.find((i) => i.id === 102);
+  assert.deepEqual(item.changes.map((c) => [c.key, c.from, c.to]), [['salePrice', 450, null]]);
+  await applyPlan(plan);
+  assert.ok(item.result.ok, item.result.message);
+  const v = live.find((p) => p.id === 100).variations_data.find((x) => x.id === 102);
+  assert.deepEqual([v.sale_price, v.date_on_sale_from, v.date_on_sale_to], ['', '', ''], 'en la tienda: sin rebaja y sin fechas');
+  assert.ok(!plan.items.some((i) => i.id === 200 && i.changes.length), 'la bolsa no se eligió: no se toca');
+  assert.equal(live.find((p) => p.id === 200).sale_price, '399', 'y conserva su descuento en la tienda');
 });

@@ -9,6 +9,9 @@ const { describeRoute } = require('../woo/http');
 const current = { excel: null, photos: null };
 const laneOf = (type) => (type.startsWith('photos') ? 'photos' : 'excel');
 const MAX_LOG = 200;
+// Última tarea de cada usuario por área: si otra persona corrió algo después,
+// quien tiene una revisión pendiente sigue viendo la suya (y su botón de subir).
+const lastByUser = new Map();
 
 function publicJob(job) {
   if (!job) return null;
@@ -16,8 +19,18 @@ function publicJob(job) {
   return { id, type, status, startedAt, finishedAt, user, progress, log, summary, details, error, errorCode, webUrl, downloadUrl };
 }
 
-function getCurrent(lane = 'excel') {
-  return publicJob(current[lane] || null);
+/**
+ * Tarea a mostrar en el panel. Si la última del área es de otra persona y ya
+ * terminó, pero `showOwn(userId)` dice que el usuario tiene una revisión
+ * pendiente, se muestra la suya.
+ */
+function getCurrent(lane = 'excel', { userId = null, showOwn = () => false } = {}) {
+  const job = current[lane] || null;
+  if (userId && job && job.status !== 'running' && String(job.user.id) !== String(userId) && showOwn(userId)) {
+    const own = lastByUser.get(`${lane}:${userId}`);
+    if (own) return publicJob(own);
+  }
+  return publicJob(job);
 }
 
 /**
@@ -54,6 +67,7 @@ async function start(type, user, task) {
     downloadUrl: null,
   };
   current[lane] = job;
+  lastByUser.set(`${lane}:${user.id}`, job);
 
   const ctx = {
     runId: job.id,

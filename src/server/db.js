@@ -87,6 +87,17 @@ async function migrate() {
       updated_by BIGINT REFERENCES users(id),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    -- Descuentos que puso el panel con el archivo de precios: al dejar de venir en
+    -- el archivo se quitan solos. Los que no están aquí se pusieron a mano en la
+    -- tienda y el usuario elige si se conservan.
+    CREATE TABLE IF NOT EXISTS panel_sales (
+      woo_id BIGINT PRIMARY KEY,
+      sku TEXT,
+      sale_price NUMERIC NOT NULL,
+      run_id BIGINT,
+      set_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     -- Usuario eliminado: ya no aparece ni puede entrar, pero el historial conserva quién hizo qué.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 

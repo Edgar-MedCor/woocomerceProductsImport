@@ -127,6 +127,21 @@
           <div class="plan-actions"><a id="jobDownloadLink" class="button hidden" download>Descargar reporte (Excel)</a></div>
           <div id="planView" class="hidden">
             <ul id="planNotes" class="notes"></ul>
+            <div id="manualSalesBox" class="manual-sales hidden">
+              <h3>Descuentos puestos a mano en la tienda</h3>
+              <p class="muted" id="manualSalesHelp"></p>
+              <div class="plan-actions" id="manualSalesActions">
+                <button type="button" id="manualSalesAll" class="secondary">Marcar todos</button>
+                <button type="button" id="manualSalesNone" class="secondary">Desmarcar todos</button>
+                <span id="manualSalesCount" class="muted"></span>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead><tr><th>Regresar a precio normal</th><th>Producto</th><th>Precio normal</th><th>Precio rebajado</th><th>Oferta programada</th></tr></thead>
+                  <tbody id="manualSalesBody"></tbody>
+                </table>
+              </div>
+            </div>
             <div class="plan-actions">
               <button id="pushBtn" class="hidden"></button>
               <a id="jobExcelLink" class="button secondary hidden" target="_blank" rel="noopener">Abrir Excel</a>

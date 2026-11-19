@@ -1,0 +1,41 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const ExcelJS = require('exceljs');
+const { parsePrices } = require('../src/stockprice/files');
+const { stockPriceRows, applySaleChoices, liveManualSales } = require('../src/commands/push');
+const { buildPlan } = require('../src/push/plan');
+const { applyPlan } = require('../src/push/apply');
+const { writeBack } = require('../src/push/writeback');
+const backup = require('../src/push/backup');
+const { undoInStore } = require('../src/push/undo');
+const { baseCatalog, mockStore, excelFrom } = require('./helpers');
+
+test('Descuento a mano quitado: el Excel se actualiza y Deshacer lo regresa con sus fechas', async () => {
+  const catalog = baseCatalog();
+  Object.assign(catalog[0].variations_data.find((x) => x.id === 102), { sale_price: '450', date_on_sale_from: '2026-11-13T00:00:00', date_on_sale_to: '2026-11-17T23:59:59' });
+  const live = mockStore(catalog);
+  const excel = await excelFrom(catalog);
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('H');
+  ws.addRow(['ClaveCompleta', 'Precio', 'PorcentajeDescuento', 'PrecioDescuento']);
+  ws.addRow(['RD45747M002', 699, 0, 699]);
+  const { prices, sales } = await parsePrices(Buffer.from(await wb.xlsx.writeBuffer()));
+  const { rows, report, edits } = stockPriceRows(excel, { prices, sales });
+  const plan = await buildPlan({ ...excel, rows }, { canCreate: false, canDelete: false });
+  report.manualSales = await liveManualSales(report.manualSales);
+  applySaleChoices({ plan, excel, edits, report }, [102]);
+  const snap = await backup.snapshotBefore(plan);
+  await applyPlan(plan);
+  const buf = await writeBack(excel, plan, { when: 'hoy' });
+  assert.ok(buf.length > 0);
+  const v = () => live.find((p) => p.id === 100).variations_data.find((x) => x.id === 102);
+  assert.equal(v().sale_price, '');
+  // respaldo como lo guarda saveBackup
+  const item = plan.items.find((i) => i.id === 102);
+  const { fields, before } = snap.get(item);
+  assert.deepEqual(fields, ['sale_price', 'date_on_sale_from', 'date_on_sale_to']);
+  const after = backup.snapshotOf(v(), fields);
+  const { results } = await undoInStore([{ kind: 'variation', action: 'update', woo_id: 102, parent_id: 100, sku: 'RD45747M002', fields, before, after }], {});
+  assert.ok(results.every((r) => r.ok), JSON.stringify(results));
+  assert.deepEqual([v().sale_price, v().date_on_sale_from, v().date_on_sale_to], ['450', '2026-11-13T00:00:00', '2026-11-17T23:59:59']);
+});

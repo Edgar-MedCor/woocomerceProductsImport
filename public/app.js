@@ -294,7 +294,16 @@ const PUSH_STEP = {
     label: (n) => `Subir ${n} producto(s) con cambios a la tienda`,
   },
   'photos-review': { endpoint: '/sync/photos/push', pending: (s) => (s['Productos/colores con fotos nuevas'] || 0) + (s['Productos padre sin foto o con galería incompleta (se arma su galería)'] || 0), label: (n) => `Subir fotos de ${n} producto(s)/color(es)` },
-  'stock-review': { endpoint: '/sync/push', pending: (s) => s['Productos/variaciones con cambios'] || 0, label: (n) => `Subir precio/inventario de ${n} producto(s) a la tienda` },
+  'stock-review': {
+    endpoint: '/sync/push',
+    // Los descuentos a mano también cuentan: aunque no haya otros cambios, se puede subir solo para quitarlos.
+    pending: (s) => (s['Productos/variaciones con cambios'] || 0) + (s['Descuentos puestos a mano en la tienda (tú eliges si se conservan)'] || 0),
+    label: () => {
+      const changes = lastPlanJob?.details?.summary?.['Productos/variaciones con cambios'] || 0;
+      const removing = chosenSales().length;
+      return removing ? `Subir ${changes} cambio(s) y quitar ${removing} descuento(s) a mano` : `Subir precio/inventario de ${changes} producto(s) a la tienda`;
+    },
+  },
   'attrs-review': { endpoint: '/sync/attributes/fix', pending: (s) => s['Productos a corregir'] || 0, label: (n) => `Corregir atributos de ${n} producto(s)` },
 };
 const STATUS_LABEL = { running: 'En curso', success: 'Terminado', error: 'Con error' };
@@ -406,7 +415,7 @@ async function launch(button, request) {
   }
 }
 const startPull = (force = false, button = null) => launch(button, () => api('/sync/pull', { method: 'POST', body: { force } }));
-const startJob = (path, button = null) => launch(button, () => api(path, { method: 'POST', body: {} }));
+const startJob = (path, button = null, body = {}) => launch(button, () => api(path, { method: 'POST', body }));
 $('#pullBtn').addEventListener('click', (e) => startPull(false, e.currentTarget));
 $('#reviewBtn').addEventListener('click', (e) => startJob('/sync/review', e.currentTarget));
 $('#photosReviewBtn').addEventListener('click', (e) => startJob('/sync/photos/review', e.currentTarget));
@@ -433,6 +442,9 @@ $('#pushBtn').addEventListener('click', async () => {
     return;
   }
   const isPhotos = lastPlanJob?.type === 'photos-review';
+  const isStock = lastPlanJob?.type === 'stock-review';
+  const manual = lastPlanJob?.details?.manualSales || [];
+  const removing = isStock ? chosenSales() : [];
   const trashed = (s['A eliminar (papelera)'] || 0) + (s['Simples que pasan a variación'] || 0) + (s['Variaciones que pasan a otro producto'] || 0);
   const ok = await confirmModal({
     title: isPhotos ? 'Subir fotos a la tienda' : 'Subir cambios a la tienda',
@@ -449,10 +461,12 @@ $('#pushBtn').addEventListener('click', async () => {
           ['Variaciones que pasan a otro producto', s['Variaciones que pasan a otro producto'] || null],
           ['A la papelera', s['A eliminar (papelera)'] || null],
           ['Ya existían (se vinculan)', s['Ya existían en la tienda (se vinculan)'] || null],
+          ['Descuentos a mano que regresan a precio normal', isStock && manual.length ? removing.length : null],
+          ['Descuentos a mano que se conservan', isStock && manual.length ? manual.length - removing.length : null],
         ]),
       trashed ? el('p', { class: 'callout warning' }, `${trashed} producto(s)/variación(es) se mandarán a la papelera de WordPress. Se pueden restaurar con "Deshacer" desde el Historial.`) : null),
   });
-  if (ok) startJob($('#pushBtn').dataset.endpoint, $('#pushBtn'));
+  if (ok) startJob($('#pushBtn').dataset.endpoint, $('#pushBtn'), isStock ? { removeSales: removing } : {});
 });
 $('#forcePullBtn').addEventListener('click', async () => {
   const ok = await confirmModal({
@@ -491,6 +505,7 @@ function notifyJobEnd(job) {
 function startPolling(lane = activeLane) {
   if (watchers[lane]) return; // ya se está vigilando
   let failures = 0;
+  let watchedId = null;
   const stop = () => { clearInterval(watchers[lane]); delete watchers[lane]; };
   watchers[lane] = setInterval(async () => {
     try {
@@ -498,9 +513,11 @@ function startPolling(lane = activeLane) {
       if (failures >= 2) toast('Conexión recuperada.', 'success');
       failures = 0;
       if (activeLane === lane) renderJob(current);
+      if (current?.status === 'running') watchedId ??= current.id;
       if (current?.status !== 'running') {
         stop();
-        if (current) notifyJobEnd(current);
+        // Solo se avisa de la tarea que se estaba siguiendo (no de una revisión propia anterior que vuelve a mostrarse).
+        if (current && (watchedId === null || current.id === watchedId)) notifyJobEnd(current);
         // Si su pestaña está a la vista, se pone al día.
         const visible = $('#tabs button.active')?.dataset.tab;
         if (lane === 'photos' && visible === 'photos') loadPhotos().catch(() => {});
@@ -590,6 +607,7 @@ function renderPlan(job) {
     $('#pushBtn').textContent = step.label(pending);
     $('#pushBtn').dataset.endpoint = step.endpoint;
   }
+  renderManualSales(job, canPush);
   $('#rowHead').textContent = job.type.startsWith('photos') ? 'Carpeta' : job.type.startsWith('attrs') ? 'ID' : 'Fila';
   $('#jobExcelLink').classList.toggle('hidden', !job.webUrl);
   if (job.webUrl) $('#jobExcelLink').href = job.webUrl;
@@ -638,6 +656,58 @@ function renderPlan(job) {
   if (!visible.length) rows.push(el('tr', {}, el('td', { colspan: 4, class: 'muted' }, 'Nada que mostrar con este filtro.')));
   $('#planBody').replaceChildren(...rows);
 }
+
+// ---------- descuentos puestos a mano (revisión de precios con descuentos) ----------
+// Lo que el usuario marcó para regresar a precio normal, por revisión.
+const saleChoices = new Map(); // jobId -> Set(id)
+const MAX_SALE_ROWS = 1000;
+const money = (n) => (n === null || n === undefined ? '—' : `$${Number(n).toLocaleString('es-MX')}`);
+const chosenSales = () => [...(saleChoices.get(lastPlanJob?.id) || [])];
+
+function renderManualSales(job, editable) {
+  const list = job?.type === 'stock-review' ? job.details?.manualSales || [] : [];
+  $('#manualSalesBox').classList.toggle('hidden', !list.length);
+  if (!list.length) return;
+  if (!saleChoices.has(job.id)) saleChoices.set(job.id, new Set());
+  const chosen = saleChoices.get(job.id);
+  $('#manualSalesHelp').textContent = editable
+    ? `${list.length} producto(s) tienen precio rebajado en la tienda que NO viene en el archivo (alguien lo puso a mano). Marca los que deben regresar a su precio normal; los que no marques se conservan como están, con sus fechas.`
+    : `${list.length} producto(s) tienen precio rebajado en la tienda que no viene en el archivo. Solo quien hizo la revisión puede elegir.`;
+  $('#manualSalesActions').classList.toggle('hidden', !editable);
+  const update = () => {
+    $('#manualSalesCount').textContent = `${chosen.size} de ${list.length} regresan a precio normal`;
+    if (editable) $('#pushBtn').textContent = PUSH_STEP[job.type].label();
+  };
+  const rows = list.slice(0, MAX_SALE_ROWS).map((m) => {
+    const box = el('input', { type: 'checkbox', 'aria-label': `Regresar ${m.sku} a precio normal` });
+    box.checked = chosen.has(m.id);
+    box.disabled = !editable;
+    box.addEventListener('change', () => {
+      if (box.checked) chosen.add(m.id);
+      else chosen.delete(m.id);
+      update();
+    });
+    const pct = m.regular ? ` (-${Math.round((1 - m.sale / m.regular) * 100)}%)` : '';
+    const dates = m.from || m.to ? `${m.from || '…'} a ${m.to || 'sin fin'}` : 'Siempre (sin fechas)';
+    return el('tr', {},
+      el('td', {}, box),
+      el('td', {}, el('strong', {}, m.sku), el('div', { class: 'muted' }, m.name || '')),
+      el('td', {}, money(m.regular)),
+      el('td', {}, `${money(m.sale)}${pct}`),
+      el('td', {}, dates));
+  });
+  if (list.length > MAX_SALE_ROWS) rows.push(el('tr', {}, el('td', { colspan: 5, class: 'muted' }, `… y ${list.length - MAX_SALE_ROWS} más (usa "Marcar todos" o revisa la hoja "Descuentos a mano" del reporte).`)));
+  $('#manualSalesBody').replaceChildren(...rows);
+  update();
+}
+$('#manualSalesAll').addEventListener('click', () => {
+  saleChoices.set(lastPlanJob.id, new Set((lastPlanJob?.details?.manualSales || []).map((m) => m.id)));
+  renderManualSales(lastPlanJob, true);
+});
+$('#manualSalesNone').addEventListener('click', () => {
+  saleChoices.set(lastPlanJob.id, new Set());
+  renderManualSales(lastPlanJob, true);
+});
 
 // Enlaces para consultar en la tienda lo que se creó o modificó.
 const link = (href, text) => el('a', { href, target: '_blank', rel: 'noopener' }, text);

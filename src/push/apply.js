@@ -106,7 +106,11 @@ async function buildPayload(item, terms, ctx) {
   if (keys.has('shortDescription')) p.short_description = row.shortDescription ?? '';
   if (keys.has('description')) p.description = row.description ?? '';
   if (keys.has('regularPrice')) p.regular_price = str(row.regularPrice);
-  if (keys.has('salePrice')) p.sale_price = str(row.salePrice);
+  if (keys.has('salePrice')) {
+    p.sale_price = str(row.salePrice);
+    // Descuentos del archivo de precios: aplican ya, sin fechas de oferta programadas.
+    if (row._clearSaleDates) Object.assign(p, { date_on_sale_from: '', date_on_sale_to: '' });
+  }
   if (keys.has('stock')) {
     if (isBlank(row.stock)) p.manage_stock = false;
     else Object.assign(p, { manage_stock: true, stock_quantity: parseNumber(row.stock) });

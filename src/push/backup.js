@@ -10,7 +10,7 @@ const SIMPLE = {
   type: ['type'], name: ['name'], sku: ['sku'], status: ['status'], featured: ['featured'],
   categories: ['categories'], tags: ['tags'], brand: ['brands'],
   shortDescription: ['short_description'], description: ['description'],
-  regularPrice: ['regular_price'], salePrice: ['sale_price'],
+  regularPrice: ['regular_price'], salePrice: ['sale_price', 'date_on_sale_from', 'date_on_sale_to'],
   stock: ['manage_stock', 'stock_quantity'], stockStatus: ['stock_status'],
   weight: ['weight'], length: ['dimensions'], width: ['dimensions'], height: ['dimensions'],
 };
@@ -74,6 +74,7 @@ function toPayload(values, fields) {
   const meta = [];
   for (const f of fields) {
     if (f.startsWith('meta:')) meta.push({ key: f.slice(5), value: values[f] ?? '' });
+    else if (f.startsWith('date_on_sale_')) payload[f] = values[f] ?? ''; // '' = sin fecha (null Woo lo ignora)
     else payload[f] = values[f];
   }
   if (meta.length) payload.meta_data = meta;

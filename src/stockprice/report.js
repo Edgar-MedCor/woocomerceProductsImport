@@ -74,6 +74,22 @@ async function buildStockReport(plan, report, { warehouses = [], warehouseNames 
       { header: 'Precio rebajado', key: 'sale', width: 15 },
       { header: 'Precio rebajado antes', key: 'before', width: 19 },
     ], report.descuentos.map((d) => ({ ...d, before: num(d.before), name: report.names.get(String(d.sku)) || '' })));
+
+    sheet(wb, 'Descuentos a mano', [
+      { header: 'SKU', key: 'sku', width: 18 },
+      { header: 'Producto', key: 'name', width: 40 },
+      { header: 'Precio normal', key: 'regular', width: 14 },
+      { header: 'Precio rebajado en la tienda', key: 'sale', width: 16 },
+      { header: '% descuento', key: 'percent', width: 12 },
+      { header: 'Oferta desde', key: 'from', width: 13 },
+      { header: 'Oferta hasta', key: 'to', width: 13 },
+      { header: 'Qué pasa', key: 'what', width: 48 },
+    ], (report.manualSales || []).map((m) => ({
+      ...m,
+      name: report.names.get(String(m.sku)) || '',
+      percent: m.regular ? Math.round((1 - m.sale / m.regular) * 100) : null,
+      what: 'No viene en el archivo: se conserva, salvo que al subir elijas regresarlo a precio normal',
+    })));
   }
 
   const params = [

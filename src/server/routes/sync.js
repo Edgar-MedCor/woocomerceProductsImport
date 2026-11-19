@@ -18,6 +18,7 @@ const { buildStockReport } = require('../../stockprice/report');
 const { loadLinks, saveLink, removeLink } = require('../../photos/links');
 const orphans = require('../../report/orphans');
 const { TYPE } = require('../../push/fields');
+const { pendingStore } = require('../pending');
 
 const router = express.Router();
 
@@ -32,24 +33,33 @@ function linksOf(item) {
   };
 }
 
-// Última revisión de cambios ("Revisar cambios"), lista para "Subir a la tienda".
-let pendingReview = null;
+// Revisiones pendientes POR USUARIO (cada quien sube la suya). Cuando alguien
+// trae, sube o deshace, las revisiones de los demás quedan viejas: se descartan y
+// al intentar subir se les explica por qué.
+const pendingReviews = pendingStore();
+const pendingPhotoReviews = pendingStore();
+const nameOf = (user) => user.display_name || user.username;
 const REVIEW_TTL_MS = 30 * 60 * 1000;
+// Lo que ve cada usuario: su propia revisión pendiente aunque otro haya corrido algo después.
+const currentFor = (lane, user) => jobs.getCurrent(lane, {
+  userId: user.id,
+  showOwn: (id) => (lane === 'photos' ? pendingPhotoReviews : pendingReviews).has(id),
+});
 
 // Estado general para la pantalla principal.
-router.get('/status', (_req, res) => {
+router.get('/status', (req, res) => {
   const excelPath = config.excelPath();
-  res.json({ ok: true, excelPath, lastPull: state.get(excelPath), current: jobs.getCurrent('excel') });
+  res.json({ ok: true, excelPath, lastPull: state.get(excelPath), current: currentFor('excel', req.user) });
 });
 
 // Avance de la tarea en curso de un área: ?lane=excel (por defecto) o ?lane=photos.
 router.get('/current', (req, res) => {
-  res.json({ ok: true, current: jobs.getCurrent(req.query.lane === 'photos' ? 'photos' : 'excel') });
+  res.json({ ok: true, current: currentFor(req.query.lane === 'photos' ? 'photos' : 'excel', req.user) });
 });
 
 // ---------- Tablero de fotos ----------
-router.get('/photos/dashboard', requirePermission('photos'), (_req, res) => {
-  res.json({ ok: true, ...dashboard.getDashboard(), current: jobs.getCurrent('photos') });
+router.get('/photos/dashboard', requirePermission('photos'), (req, res) => {
+  res.json({ ok: true, ...dashboard.getDashboard(), current: currentFor('photos', req.user) });
 });
 
 router.post('/photos/dashboard/refresh', requirePermission('photos'), (_req, res) => {
@@ -158,7 +168,7 @@ router.post('/pull', requirePermission('pull'), async (req, res, next) => {
       log,
       onProgress: (done, total) => progress(done, total, 'Leyendo variaciones'),
     }));
-    pendingReview = null;
+    pendingReviews.invalidate(`${nameOf(req.user)} hizo "Traer de la tienda"`);
     res.status(202).json({ ok: true, job });
   } catch (error) {
     next(error);
@@ -176,7 +186,7 @@ router.post('/review', requirePermission('push'), async (req, res, next) => {
         canDelete: can(user, 'delete'),
         log,
       });
-      pendingReview = { userId: user.id, reviewed };
+      pendingReviews.set(user.id, { userId: user.id, reviewed });
       return { summary: reviewed.plan.summary, details: push.publicPlan(reviewed.plan), webUrl: reviewed.source.webUrl };
     });
     res.status(202).json({ ok: true, job });
@@ -195,6 +205,10 @@ const stockReports = new Map(); // runId -> { userId, buffer } (los últimos 10)
 
 router.get('/stock-price/report/:runId', requirePermission('push'), (req, res) => {
   const report = stockReports.get(String(req.params.runId));
+  // Solo quien hizo la revisión (o un administrador) descarga su reporte.
+  if (report && String(report.userId) !== String(req.user.id) && req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, message: 'Ese reporte es de otra persona.' });
+  }
   if (!report) return res.status(404).json({ ok: false, message: 'Ese reporte ya no está disponible. Vuelve a revisar la actualización.' });
   const date = new Date().toISOString().slice(0, 10);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -221,6 +235,15 @@ router.get('/stock-price/settings', requirePermission('push'), async (_req, res,
 const uploadParts = new Map(); // `${userId}:${kind}` -> { uploadId, total, parts, at }
 const MAX_PARTS = 80; // 80 x 512 KB ≈ 40 MB en base64
 const MAX_PART_LENGTH = 600 * 1024;
+const PARTS_TTL_MS = 30 * 60 * 1000;
+
+// Limpieza: cargas abandonadas a medias y archivos cargados que ya vencieron
+// (si no, se quedarían en memoria hasta el siguiente reinicio).
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, upload] of uploadParts) if (now - upload.at > PARTS_TTL_MS) uploadParts.delete(key);
+  for (const [key, entry] of stockUploads) if (now - (entry.at || 0) > UPLOAD_TTL_MS) stockUploads.delete(key);
+}, 10 * 60 * 1000).unref();
 
 router.post('/stock-price/upload', requirePermission('push'), async (req, res, next) => {
   try {
@@ -288,13 +311,20 @@ router.post('/stock-price/review', requirePermission('push'), async (req, res, n
     }
     const warehouseNames = new Map((loaded.stock?.rows || []).map((r) => [r.warehouse, r.warehouseName]));
     const job = await jobs.start('stock-review', user, async ({ runId, log }) => {
-      const reviewed = await push.reviewStockPrice({ prices, sales, stock, warehouses, thresholds: cleanThresholds, allowedFields: allowedFields(user.role), log });
-      pendingReview = { userId: user.id, reviewed };
+      const { rows: saved } = sales ? await pool.query('SELECT woo_id, sale_price FROM panel_sales') : { rows: [] };
+      const panelSales = new Map(saved.map((r) => [String(r.woo_id), Number(r.sale_price)]));
+      const reviewed = await push.reviewStockPrice({ prices, sales, panelSales, stock, warehouses, thresholds: cleanThresholds, allowedFields: allowedFields(user.role), log });
+      pendingReviews.set(user.id, { userId: user.id, reviewed });
       log('Armando el reporte para descargar...');
       const buffer = await buildStockReport(reviewed.plan, reviewed.report, { warehouses: stock ? warehouses : [], warehouseNames, thresholds: stock ? cleanThresholds : {} });
       stockReports.set(String(runId), { userId: user.id, buffer });
       while (stockReports.size > 10) stockReports.delete(stockReports.keys().next().value);
-      return { summary: reviewed.plan.summary, details: push.publicPlan(reviewed.plan), webUrl: reviewed.source.webUrl, downloadUrl: `/api/sync/stock-price/report/${runId}` };
+      return {
+        summary: reviewed.plan.summary,
+        details: { ...push.publicPlan(reviewed.plan), manualSales: publicManualSales(reviewed.report) },
+        webUrl: reviewed.source.webUrl,
+        downloadUrl: `/api/sync/stock-price/report/${runId}`,
+      };
     });
     res.status(202).json({ ok: true, job });
   } catch (error) {
@@ -302,20 +332,49 @@ router.post('/stock-price/review', requirePermission('push'), async (req, res, n
   }
 });
 
+// Descuentos puestos a mano en la tienda, para que el usuario elija (con nombre del producto).
+function publicManualSales(report) {
+  return (report.manualSales || []).map((m) => ({ ...m, name: report.names.get(String(m.sku)) || '' }));
+}
+
+// Después de subir precios con descuentos: se recuerda qué descuentos puso el
+// panel (para quitarlos solos cuando dejen de venir en el archivo) y se olvidan los quitados.
+async function recordPanelSales(runId, reviewed) {
+  const { plan, report } = reviewed;
+  const byId = new Map(plan.items.filter((i) => i.id).map((i) => [String(i.id), i]));
+  const saleChange = (item) => item.changes.find((c) => c.key === 'salePrice');
+  for (const d of report.descuentos) {
+    const item = byId.get(String(d.id));
+    if (!item || item.errors.length || item.conflicts.some((c) => c.key === 'salePrice')) continue;
+    if (saleChange(item) && !item.result?.ok) continue; // no se pudo guardar
+    await pool.query(
+      `INSERT INTO panel_sales (woo_id, sku, sale_price, run_id, set_at) VALUES ($1,$2,$3,$4,now())
+       ON CONFLICT (woo_id) DO UPDATE SET sku = EXCLUDED.sku, sale_price = EXCLUDED.sale_price, run_id = EXCLUDED.run_id, set_at = now()`,
+      [d.id, d.sku, d.sale, runId],
+    );
+  }
+  const removed = plan.items.filter((i) => i.result?.ok && saleChange(i) && (saleChange(i).to === null || saleChange(i).to === '')).map((i) => i.id);
+  if (removed.length) await pool.query('DELETE FROM panel_sales WHERE woo_id = ANY($1::bigint[])', [removed]);
+}
+
 // Paso 2 del push: aplicar la revisión anterior en la tienda.
 router.post('/push', requirePermission('push'), async (req, res, next) => {
   try {
-    const review = pendingReview;
-    if (!review || String(review.userId) !== String(req.user.id)) {
-      return res.status(400).json({ ok: false, message: 'Primero haz "Revisar cambios".' });
-    }
+    const review = pendingReviews.take(req.user.id);
+    if (!review) return res.status(400).json({ ok: false, message: pendingReviews.missingMessage(req.user.id, 'Revisar cambios') });
     if (Date.now() - review.reviewed.reviewedAt > REVIEW_TTL_MS) {
-      pendingReview = null;
       return res.status(400).json({ ok: false, message: 'La revisión tiene más de 30 minutos. Vuelve a "Revisar cambios".' });
     }
-    pendingReview = null;
+    // Descuentos puestos a mano que el usuario eligió regresar a precio normal.
+    const removeSales = req.body?.removeSales ?? [];
+    if (!Array.isArray(removeSales) || removeSales.length > 100000 || removeSales.some((id) => !Number.isInteger(id))) {
+      pendingReviews.set(req.user.id, review);
+      return res.status(400).json({ ok: false, message: 'Lista de descuentos inválida.' });
+    }
+    const salesRemoved = removeSales.length ? push.applySaleChoices(review.reviewed, removeSales) : 0;
 
     const job = await jobs.start('push', req.user, async ({ runId, log, progress }) => {
+      pendingReviews.invalidate(`${nameOf(req.user)} subió cambios a la tienda`);
       // Sin respaldo no se sube nada: si esto falla, la tienda queda intacta.
       const snapshot = await backup.snapshotBefore(review.reviewed.plan, { log });
       try {
@@ -324,6 +383,10 @@ router.post('/push', requirePermission('push'), async (req, res, next) => {
           onProgress: (done, total) => progress(done, total, 'Guardando en la tienda'),
         });
         result.warnings.forEach(log);
+        if (salesRemoved) log(`${salesRemoved} descuento(s) puestos a mano se regresaron a precio normal (elegido por ${nameOf(req.user)}).`);
+        if (review.reviewed.report?.descuentos) {
+          await recordPanelSales(runId, review.reviewed).catch((e) => log(`No se pudo guardar qué descuentos puso el panel: ${e.message}`));
+        }
         return {
           summary: result.summary,
           details: { ...push.publicPlan(review.reviewed.plan), results: resultsOf(review.reviewed.plan), warnings: result.warnings, createdTerms: result.createdTerms },
@@ -394,14 +457,13 @@ router.post('/attributes/fix', requirePermission('attributes'), async (req, res,
 });
 
 // ---------- Fotos ----------
-let pendingPhotos = null;
 
 router.post('/photos/review', requirePermission('photos'), async (req, res, next) => {
   try {
     const user = req.user;
     const job = await jobs.start('photos-review', user, async ({ log, progress }) => {
       const review = await photos.reviewPhotos({ log, progress, links: await loadLinks(pool) });
-      pendingPhotos = { userId: user.id, review };
+      pendingPhotoReviews.set(user.id, { userId: user.id, review });
       return { summary: review.summary, details: photos.publicPhotos(review) };
     });
     res.status(202).json({ ok: true, job });
@@ -412,20 +474,17 @@ router.post('/photos/review', requirePermission('photos'), async (req, res, next
 
 router.post('/photos/push', requirePermission('photos'), async (req, res, next) => {
   try {
-    const pending = pendingPhotos;
-    if (!pending || String(pending.userId) !== String(req.user.id)) {
-      return res.status(400).json({ ok: false, message: 'Primero haz "Revisar fotos".' });
-    }
+    const pending = pendingPhotoReviews.take(req.user.id);
+    if (!pending) return res.status(400).json({ ok: false, message: pendingPhotoReviews.missingMessage(req.user.id, 'Revisar fotos') });
     if (Date.now() - pending.review.reviewedAt > REVIEW_TTL_MS) {
-      pendingPhotos = null;
       return res.status(400).json({ ok: false, message: 'La revisión tiene más de 30 minutos. Vuelve a "Revisar fotos".' });
     }
-    pendingPhotos = null;
 
     const job = await jobs.start('photos', req.user, async ({ runId, log, progress }) => {
+      pendingPhotoReviews.invalidate(`${nameOf(req.user)} subió fotos`);
       try {
         const result = await photos.applyPhotos(pending.review, { pool, runId, log, progress });
-        if (result.notMoved.length) log(`No se movieron a YA SUBIDAS (revisa errores): ${result.notMoved.join(', ')}`);
+        if (result.notMoved.length) log(`No se movieron a "${config.photos.donePath}" (revisa el motivo): ${result.notMoved.join(', ')}`);
         dashboard.refreshDashboard(pool); // el tablero se pone al día solo
         return { summary: result.summary, details: photos.publicPhotos(pending.review, { withResults: true }) };
       } finally {
@@ -485,6 +544,12 @@ async function undoableRunId() {
   return last && last.has_backup && !last.undone_at ? String(last.id) : null;
 }
 
+// IDs de sincronización: solo números (otra cosa sería un error interno de la base).
+router.param('id', (req, res, next, id) => {
+  if (!/^\d{1,18}$/.test(String(id))) return res.status(404).json({ ok: false, message: 'Esa sincronización no existe.' });
+  next();
+});
+
 router.post('/runs/:id/undo', requirePermission('undo'), async (req, res, next) => {
   try {
     const target = String(req.params.id);
@@ -495,7 +560,7 @@ router.post('/runs/:id/undo', requirePermission('undo'), async (req, res, next) 
       const { rows: backups } = await pool.query('SELECT * FROM push_backups WHERE run_id = $1 ORDER BY id', [target]);
       const { results, refreshed } = await undoInStore(backups, { log, progress });
       await pool.query('UPDATE sync_runs SET undone_at = now(), undone_by_run = $2 WHERE id = $1', [target, runId]);
-      pendingReview = null;
+      pendingReviews.invalidate(`${nameOf(req.user)} deshizo el push #${target}`);
       for (const r of results) {
         await pool.query(
           'INSERT INTO change_log (run_id, woo_id, sku, field, old_value, new_value, result, error) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
