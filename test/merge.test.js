@@ -29,7 +29,7 @@ function catalog() {
         v(302, 'RD49321004', [], { status: 'inherit', regular_price: '' })] }),
     base({ id: 310, type: 'variable', sku: 'RD49321021', name: 'Vestido Umbrella Fiusha Liso', slug: 'vestido-umbrella-fiusha-liso', status: 'publish',
       images: [{ id: 95 }], categories: [{ id: 12 }], attributes: [color(['Fiusha']), talla(['Unitalla'])],
-      variations_data: [v(311, 'RD49321OS021', [{ id: 2, name: 'Color', option: 'Fiusha' }], { sale_price: '599' })] }),
+      variations_data: [v(311, 'RD49321OS021', [{ id: 2, name: 'Color', option: 'Fiusha' }], { sale_price: '599', gallery_image_ids: [96, 95] })] }),
     base({ id: 320, type: 'simple', sku: 'RD49321OS022', name: 'VESTIDO UMBRELLA VERDE LISO', slug: 'vestido-umbrella-verde', regular_price: '699',
       manage_stock: true, stock_quantity: 2, images: [{ id: 97 }], attributes: [color(['Verde'], false), talla(['Unitalla'])] }),
     // Un solo color: solo cambia el SKU.
@@ -147,6 +147,9 @@ test('aplicar y deshacer deja la tienda como estaba', async () => {
   assert.equal(vars.find((x) => x.sku === 'RD49321OS021').sale_price, '599');
   assert.deepEqual(vars.find((x) => x.sku === 'RD49321OS021').image, { id: 95 }, 'sin foto propia usa la del producto del color');
   assert.equal(vars.find((x) => x.sku === 'RD49321OS022').stock_quantity, 2);
+  // Galería por variación: la de la variación vieja (sin repetir la principal); si no tenía, las demás fotos de su producto.
+  assert.deepEqual(vars.find((x) => x.sku === 'RD49321OS021').gallery_image_ids, [96]);
+  assert.deepEqual(vars.find((x) => x.sku === 'RD49321OS004').gallery_image_ids, [90]);
   for (const id of [300, 310, 320]) assert.equal(live.find((p) => p.id === id).status, 'trash');
 
   // Padre existente: recibe el color suelto y sus variaciones reciben su color.

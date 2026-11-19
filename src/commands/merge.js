@@ -98,6 +98,17 @@ function tallaOf(sku, explicit, parentOptions, sizes) {
 const META_KEEP = /^wayan_/;
 const keepMeta = (obj) => (obj.meta_data || []).filter((m) => META_KEEP.test(m.key)).map((m) => ({ key: m.key, value: m.value }));
 
+/**
+ * Galería de la variación (la usa el plugin de galerías por variación: al elegir el color, la
+ * tienda muestra estas fotos). Es la que tenía la variación vieja; si no tenía, las demás fotos
+ * del producto de ese color (o del simple), sin repetir la principal.
+ */
+function variationGallery(entry, mainImage) {
+  const own = entry.source === 'variation' ? entry.variation.gallery_image_ids : null;
+  const ids = Array.isArray(own) && own.length ? own : (entry.product.images || []).map((img) => img.id);
+  return uniq(ids.map(Number)).filter((id) => id && id !== Number(mainImage));
+}
+
 // Datos de una variación nueva a partir de la variación vieja (o del simple) que reemplaza.
 function variationPayload(entry, attributes) {
   const src = entry.source === 'variation' ? entry.variation : entry.product;
@@ -122,6 +133,8 @@ function variationPayload(entry, attributes) {
   };
   if (payload.manage_stock) payload.stock_quantity = src.stock_quantity ?? 0;
   if (image) payload.image = { id: image };
+  const gallery = variationGallery(entry, image);
+  if (gallery.length) payload.gallery_image_ids = gallery;
   return payload;
 }
 
