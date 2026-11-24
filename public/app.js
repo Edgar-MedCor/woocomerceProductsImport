@@ -4,6 +4,7 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 let me = null;
 // Consulta periódica de la tarea en curso de cada área; sigue aunque se cambie de pestaña.
 const watchers = {};
+let activityTimer = null; // consulta periódica de los avisos del equipo
 const stopWatchers = () => Object.keys(watchers).forEach((lane) => { clearInterval(watchers[lane]); delete watchers[lane]; });
 // Área cuya tarea se muestra: 'excel' (pestaña Catálogo) o 'photos' (pestaña Fotos).
 let activeLane = 'excel';
@@ -319,6 +320,7 @@ const STATUS_LABEL = { running: 'En curso', success: 'Terminado', error: 'Con er
 function showLogin() {
   me = null;
   stopWatchers();
+  clearInterval(activityTimer);
   $('#bootView').classList.add('hidden');
   $('#appView').classList.add('hidden');
   $('#loginView').classList.remove('hidden');
@@ -332,7 +334,74 @@ function showApp() {
   $('#userName').textContent = `${me.displayName} · ${me.roleLabel}`;
   $$('[data-perm]').forEach((node) => node.classList.toggle('hidden', !can(node.dataset.perm)));
   switchTab(can('pull') ? 'sync' : can('photos') ? 'photos' : 'history');
+  startActivity();
 }
+
+// ---------- avisos del equipo ----------
+// Lo que hicieron los demás (subieron productos, cambios, fotos…). Se consulta cada minuto;
+// lo nuevo desde la última vez que se abrió la lista sale marcado y con un aviso en pantalla.
+let knownNotices = null; // avisos ya vistos en esta sesión (para avisar solo de los nuevos)
+
+function startActivity() {
+  clearInterval(activityTimer);
+  knownNotices = null;
+  loadActivity();
+  activityTimer = setInterval(loadActivity, 60000);
+}
+
+async function loadActivity() {
+  let data;
+  try {
+    data = await api('/sync/activity', { quiet: true });
+  } catch {
+    return; // sin conexión: se vuelve a intentar en el siguiente minuto
+  }
+  const { notices, unread } = data;
+  showActivityCount(unread);
+  renderActivity(notices);
+  if (knownNotices) {
+    const fresh = notices.filter((n) => n.unread && !knownNotices.has(n.id));
+    if (fresh.length) toast(fresh.length === 1 ? fresh[0].text : `${fresh.length} avisos nuevos del equipo. Ábrelos en "Avisos".`, fresh.some((n) => n.tone === 'warning') ? 'warning' : 'info');
+  } else if (unread) {
+    toast(`Tienes ${unread} aviso(s) del equipo sin leer. Ábrelos en "Avisos", arriba a la derecha.`, 'info');
+  }
+  knownNotices = new Set(notices.map((n) => n.id));
+}
+
+function showActivityCount(unread) {
+  $('#activityCount').textContent = unread > 9 ? '9+' : String(unread);
+  $('#activityCount').classList.toggle('hidden', !unread);
+  $('#activityBtn').setAttribute('aria-label', unread ? `Avisos: ${unread} sin leer` : 'Avisos');
+}
+
+function renderActivity(notices) {
+  $('#activityList').replaceChildren(...(notices.length
+    ? notices.map((n) => el('li', { class: `activity-item ${n.tone}${n.unread ? ' unread' : ''}` },
+      el('div', {}, n.text),
+      n.skus.length ? el('div', { class: 'muted small' }, `SKU: ${n.skus.join(', ')}${n.moreSkus ? ` y ${n.moreSkus} más` : ''}`) : null,
+      el('div', { class: 'muted small' }, fmtDate(n.at))))
+    : [el('li', { class: 'muted activity-empty' }, 'Sin avisos en los últimos 7 días.')]));
+}
+
+function closeActivity() {
+  if ($('#activityPanel').classList.contains('hidden')) return;
+  $('#activityPanel').classList.add('hidden');
+  $('#activityBtn').setAttribute('aria-expanded', 'false');
+  // Lo que ya se vio deja de estar resaltado.
+  $$('#activityList .unread').forEach((li) => li.classList.remove('unread'));
+}
+
+$('#activityBtn').addEventListener('click', async (e) => {
+  e.stopPropagation();
+  if (!$('#activityPanel').classList.contains('hidden')) return closeActivity();
+  $('#activityPanel').classList.remove('hidden');
+  $('#activityBtn').setAttribute('aria-expanded', 'true');
+  showActivityCount(0);
+  await api('/sync/activity/seen', { method: 'POST', body: {}, quiet: true }).catch(() => {});
+});
+$('#activityPanel').addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', closeActivity);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeActivity(); });
 
 $('#loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1138,6 +1207,9 @@ function renderOrphans(refreshing) {
 
 // ---------- historial ----------
 async function loadHistory() {
+  $('#historyScope').textContent = me.role === 'admin'
+    ? 'Ves las sincronizaciones de todo el equipo.'
+    : 'Aquí ves solo lo que hiciste tú. Lo que hacen los demás te llega en "Avisos", arriba a la derecha.';
   $('#runsBody').replaceChildren(loadingRow(5, 'Cargando historial…'));
   let runs;
   try {

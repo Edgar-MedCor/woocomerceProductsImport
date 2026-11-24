@@ -88,11 +88,17 @@ function colorOfProduct(product, variations = []) {
   return fromVariations.length === 1 ? fromVariations[0] : null;
 }
 
+// Códigos de talla del sistema que significan "sin talla" (cajas, accesorios…): esos artículos
+// varían solo por color. La talla de una variación es '' (sin talla) o null (no se sabe).
+const NO_SIZE = new Set(['SND']);
+
 function tallaOf(sku, explicit, parentOptions, sizes) {
   if (explicit) return explicit;
   if ((parentOptions || []).length === 1) return parentOptions[0];
   const m = key(sku).match(SKU_PARTS);
-  return m ? sizes.get(m[2]) || null : null;
+  if (!m) return null;
+  if (NO_SIZE.has(m[2])) return '';
+  return sizes.get(m[2]) || null;
 }
 
 const META_KEEP = /^wayan_/;
@@ -190,7 +196,7 @@ function planGroup(group, ctx) {
         const vColor = optionOf(v, 'color') || color || ctx.colors.get(colorCode(v.sku));
         const talla = tallaOf(v.sku, optionOf(v, 'talla'), tallas, ctx.sizes);
         if (!vColor) fail(`No se sabe el nombre del color de ${v.sku}: ponle el atributo Color a ${p.sku}.`);
-        if (!talla) fail(`No se sabe la talla de ${v.sku}: ponle el atributo Talla.`);
+        if (talla === null) fail(`No se sabe la talla de ${v.sku}: ponle el atributo Talla.`);
         plan.entries.push({ source: 'variation', product: p, variation: v, sku: v.sku, color: vColor, talla });
       }
       plan.trashProducts.push(p);
@@ -198,7 +204,7 @@ function planGroup(group, ctx) {
       const color = colorOfProduct(p) || ctx.colors.get(colorCode(p.sku));
       const talla = tallaOf(p.sku, null, attrOf(p, 'talla')?.options, ctx.sizes);
       if (!color) fail(`No se sabe el nombre del color de ${p.sku}: ponle el atributo Color.`);
-      if (!talla) fail(`No se sabe la talla de ${p.sku}: ponle el atributo Talla.`);
+      if (talla === null) fail(`No se sabe la talla de ${p.sku}: ponle el atributo Talla.`);
       plan.entries.push({ source: 'simple', product: p, sku: p.sku, color, talla });
     }
   }
@@ -215,7 +221,7 @@ function planGroup(group, ctx) {
       const color = optionOf(v, 'color');
       const talla = tallaOf(v.sku, optionOf(v, 'talla'), attrOf(parent, 'talla')?.options, ctx.sizes);
       if (!color && !parentColor) fail(`Las variaciones de ${parent.sku} no tienen color y el padre no dice cuál es: ponle el atributo Color a ${parent.sku}.`);
-      if (!talla) fail(`No se sabe la talla de ${v.sku || `ID ${v.id}`} (de ${parent.sku}).`);
+      if (talla === null) fail(`No se sabe la talla de ${v.sku || `ID ${v.id}`} (de ${parent.sku}).`);
       plan.parentFixes.push({ variation: v, color: color || parentColor, talla, needsUpdate: !color || !optionOf(v, 'talla') });
     }
   }
@@ -246,7 +252,7 @@ function planGroup(group, ctx) {
   const combos = new Map();
   for (const e of all) {
     const k = `${plain(e.color)}|${plain(e.talla)}`;
-    if (e.color && e.talla && combos.has(k)) fail(`${e.sku} y ${combos.get(k)} serían la misma variación (${e.color} · ${e.talla}). Revísalos a mano.`);
+    if (e.color && e.talla !== null && e.talla !== undefined && combos.has(k)) fail(`${e.sku} y ${combos.get(k)} serían la misma variación (${e.color} · ${e.talla}). Revísalos a mano.`);
     combos.set(k, e.sku);
   }
   const skus = all.map((e) => key(e.sku)).filter(Boolean);
@@ -255,13 +261,16 @@ function planGroup(group, ctx) {
 
   const colors = uniq(all.map((e) => e.color));
   const tallas = sortSizes(uniq(all.map((e) => e.talla)));
+  // Sin talla (SND): el modelo varía solo por color. No se pueden mezclar con artículos que sí tienen talla.
+  const sizeless = all.filter((e) => e.talla === '');
+  if (sizeless.length && sizeless.length < all.length) fail(`Se mezclan artículos sin talla (${sizeless.map((e) => e.sku).join(', ')}) con otros que sí tienen talla. Revísalos a mano.`);
   const colorAttr = ctx.globals.color;
   const tallaAttr = ctx.globals.talla;
-  if (!colorAttr || !tallaAttr) fail('No existen los atributos globales Color y Talla en la tienda.');
+  if (!colorAttr || (tallas.length && !tallaAttr)) fail('No existen los atributos globales Color y Talla en la tienda.');
   const varyTalla = shouldVary('talla', tallas, true);
   const coreAttrs = [
     { id: colorAttr?.id, name: colorAttr?.name, options: colors, visible: true, variation: true, position: 0 },
-    { id: tallaAttr?.id, name: tallaAttr?.name, options: tallas, visible: true, variation: varyTalla, position: 1 },
+    ...(tallas.length ? [{ id: tallaAttr?.id, name: tallaAttr?.name, options: tallas, visible: true, variation: varyTalla, position: 1 }] : []),
   ];
 
   if (parent) {
@@ -272,8 +281,10 @@ function planGroup(group, ctx) {
     const others = (parent.attributes || []).filter((a) => !isAttr(a, 'color') && !isAttr(a, 'talla'));
     // Colores que ya tenía el padre y no usa ninguna variación también se conservan.
     coreAttrs[0].options = uniq([...parentColors, ...colors]);
-    coreAttrs[1].options = sortSizes(uniq([...(attrOf(parent, 'talla')?.options || []), ...tallas]));
-    coreAttrs[1].variation = shouldVary('talla', coreAttrs[1].options, true);
+    if (coreAttrs[1]) {
+      coreAttrs[1].options = sortSizes(uniq([...(attrOf(parent, 'talla')?.options || []), ...tallas]));
+      coreAttrs[1].variation = shouldVary('talla', coreAttrs[1].options, true);
+    }
     plan.attributes = [...coreAttrs, ...others.map((a, n) => ({ ...a, position: n + 2 }))];
     if (!plan.entries.length) fail('No hay nada que pasar al padre.');
   } else {
@@ -341,7 +352,18 @@ async function reviewMerge({ log = console.log, progress = () => {} } = {}) {
     ...[...products.values()].filter((p) => p.type === 'simple').map((p) => ({ sku: p.sku, talla: (attrOf(p, 'talla')?.options || []).length === 1 ? attrOf(p, 'talla').options[0] : null })),
   ];
   const sizes = learnSizes(sizeEntries);
-  const colors = learnColors([...variationsByParent.values(), ...variations.values()].flat().map((v) => ({ sku: v.sku, color: optionOf(v, 'color') })));
+  // Nombre de cada código de color: de las variaciones y también de los productos de un solo color.
+  const productColors = lite.map((p) => {
+    const opts = attrOf(p, 'color')?.options || [];
+    const sku = key(p.sku);
+    // Producto por color (estilo + color) o simple (estilo + talla + color): se lleva a la forma estilo + talla + color.
+    const asVariation = SKU_PARTS.test(sku) ? sku : sku.replace(/^([A-Z]+\d+?)(\d{2,3})$/, '$1X$2');
+    return { sku: asVariation, color: opts.length === 1 ? opts[0] : null };
+  });
+  const colors = learnColors([
+    ...[...variationsByParent.values(), ...variations.values()].flat().map((v) => ({ sku: v.sku, color: optionOf(v, 'color') })),
+    ...productColors,
+  ]);
   const findGlobal = (name) => (globals || []).find((g) => plain(g.name) === name || plain(String(g.slug || '').replace(/^pa_/, '')) === name);
 
   // SKU del estilo ocupado (también en la papelera) y slugs ocupados (para la URL final).

@@ -154,6 +154,30 @@ section[data-view="sync"] > .grid > .card[data-perm="attributes"] { border-top-c
 .topbar .user #userName { margin-right: 6px; color: #e6edf7; }
 .topbar .user button.link { color: #c9d6e8; }
 .topbar .user button.link:hover { background: rgba(255, 255, 255, .1); color: #fff; }
+
+/* ---------- Avisos del equipo ---------- */
+.activity { position: relative; margin-right: 6px; }
+.topbar .user .activity-btn { display: inline-flex; align-items: center; gap: 6px; }
+.activity-count {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center;
+  background: var(--run); color: #fff; font-size: 11px; font-weight: 700; line-height: 1;
+}
+.activity-panel {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 60; width: min(420px, calc(100vw - 32px));
+  background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow-lg); white-space: normal; text-align: left;
+}
+.activity-head { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.activity-head strong { color: var(--primary); }
+.activity-list { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
+.activity-item { padding: 10px 14px 10px 16px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; font-size: 14px; line-height: 1.4; }
+.activity-item:last-child { border-bottom: 0; }
+.activity-item .small { font-size: 12px; margin-top: 3px; }
+.activity-item.warning { border-left-color: var(--run); }
+.activity-item.info { border-left-color: var(--accent); }
+.activity-item.unread { background: var(--primary-soft); font-weight: 600; }
+.activity-item.unread .small { font-weight: 400; }
+.activity-empty { padding: 14px; }
 main { max-width: 1160px; margin: 0 auto; padding: 26px 20px 40px; }
 
 /* ---------- Tarea en curso ---------- */

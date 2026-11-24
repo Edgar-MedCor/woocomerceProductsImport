@@ -20,6 +20,7 @@ const orphans = require('../../report/orphans');
 const merge = require('../../commands/merge');
 const { TYPE } = require('../../push/fields');
 const { pendingStore } = require('../pending');
+const activity = require('../activity');
 
 const router = express.Router();
 
@@ -45,6 +46,27 @@ const REVIEW_TTL_MS = 30 * 60 * 1000;
 const currentFor = (lane, user) => jobs.getCurrent(lane, {
   userId: user.id,
   showOwn: (id) => (lane === 'photos' ? pendingPhotoReviews : pendingReviews).has(id),
+});
+
+// Solo el administrador ve el historial de todos; los demás, lo suyo.
+const seesAll = (user) => user.role === 'admin';
+
+// ---------- Avisos del equipo (lo que hicieron los demás en los últimos días) ----------
+router.get('/activity', async (req, res, next) => {
+  try {
+    res.json({ ok: true, ...(await activity.loadActivity(pool, req.user)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/activity/seen', async (req, res, next) => {
+  try {
+    await activity.markSeen(pool, req.user.id);
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // Estado general para la pantalla principal.
@@ -616,6 +638,12 @@ router.post('/runs/:id/undo', requirePermission('undo'), async (req, res, next) 
     if (target !== await undoableRunId()) {
       return res.status(400).json({ ok: false, message: 'Solo se puede deshacer el último push, una sola vez (y solo los que tienen respaldo).' });
     }
+    if (!seesAll(req.user)) {
+      const { rows: owner } = await pool.query('SELECT user_id FROM sync_runs WHERE id = $1', [target]);
+      if (String(owner[0]?.user_id) !== String(req.user.id)) {
+        return res.status(403).json({ ok: false, message: 'Solo puedes deshacer tus propios push. Pídeselo a quien lo hizo o al administrador.' });
+      }
+    }
     const job = await jobs.start('undo', req.user, async ({ runId, log, progress }) => {
       const { rows: backups } = await pool.query('SELECT * FROM push_backups WHERE run_id = $1 ORDER BY id', [target]);
       const { results, refreshed } = await undoInStore(backups, { log, progress });
@@ -666,9 +694,10 @@ router.get('/runs', requirePermission('history'), async (req, res, next) => {
       `SELECT r.id, r.type, r.status, r.started_at, r.finished_at, r.summary, r.error, r.undone_at, u.display_name AS user_name,
               (SELECT count(*) FROM change_log c WHERE c.run_id = r.id)::int AS changes
        FROM sync_runs r LEFT JOIN users u ON u.id = r.user_id
-       WHERE $2::text[] IS NULL OR r.type = ANY($2::text[])
+       WHERE ($2::text[] IS NULL OR r.type = ANY($2::text[]))
+       AND ($3::bigint IS NULL OR r.user_id = $3)
        ORDER BY r.started_at DESC LIMIT $1`,
-      [limit, types],
+      [limit, types, seesAll(req.user) ? null : req.user.id],
     );
     res.json({ ok: true, runs: rows.map((r) => ({ ...r, undoable: String(r.id) === undoable })) });
   } catch (error) {
@@ -679,9 +708,10 @@ router.get('/runs', requirePermission('history'), async (req, res, next) => {
 router.get('/runs/:id/changes', requirePermission('history'), async (req, res, next) => {
   try {
     const types = historyTypes(req.user.role);
-    if (types) {
-      const { rows: run } = await pool.query('SELECT type FROM sync_runs WHERE id = $1', [req.params.id]);
-      if (!run[0] || !types.includes(run[0].type)) return res.status(403).json({ ok: false, message: 'No tienes acceso a esa sincronización.' });
+    if (types || !seesAll(req.user)) {
+      const { rows: run } = await pool.query('SELECT type, user_id FROM sync_runs WHERE id = $1', [req.params.id]);
+      const allowed = run[0] && (!types || types.includes(run[0].type)) && (seesAll(req.user) || String(run[0].user_id) === String(req.user.id));
+      if (!allowed) return res.status(403).json({ ok: false, message: 'No tienes acceso a esa sincronización.' });
     }
     const { rows } = await pool.query(
       'SELECT woo_id, sku, field, old_value, new_value, result, error, url FROM change_log WHERE run_id = $1 ORDER BY id',

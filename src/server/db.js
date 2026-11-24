@@ -100,6 +100,9 @@ async function migrate() {
 
     -- Usuario eliminado: ya no aparece ni puede entrar, pero el historial conserva quién hizo qué.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+    -- Última vez que el usuario abrió los avisos del equipo (lo posterior se marca como no leído).
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_activity_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_sync_runs_finished ON sync_runs(finished_at DESC);
 
     -- Carpetas de fotos cuyo nombre no coincide con ningún SKU y que alguien
     -- relacionó a mano desde el panel. Se guarda el ID de OneDrive (no el

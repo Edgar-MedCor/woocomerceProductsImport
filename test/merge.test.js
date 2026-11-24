@@ -249,3 +249,25 @@ test('si un SKU no se puede pasar, el estilo regresa completo y no queda nada a 
   assert.deepEqual(live.find((p) => p.id === 710).variations_data.map((x) => x.status), ['publish']);
   assert.match(plan.result.message, /OJO: RD40070SM002 sigue publicado/);
 });
+
+test('sin talla (SND): el modelo varía solo por color y el nombre del color se aprende de otros productos', async () => {
+  const live = install([
+    base({ id: 800, type: 'simple', sku: 'BX50015SND001', name: 'Caja redonda de bambú blanca', slug: 'caja-blanca', regular_price: '379', manage_stock: true, stock_quantity: 29, images: [{ id: 81 }, { id: 82 }], attributes: [color(['Blanco'], false)] }),
+    base({ id: 810, type: 'simple', sku: 'BX50015SND015', name: 'Alhajero', slug: 'alhajero', status: 'pending', regular_price: '379', manage_stock: true, stock_quantity: 7, attributes: [] }),
+    // Otro producto de un solo color le "enseña" que el 015 es Beige.
+    base({ id: 820, type: 'variable', sku: 'RD48415015', name: 'Top Beige', slug: 'top-beige', attributes: [color(['Beige']), talla(['CH/M'], true)],
+      variations_data: [v(821, 'RD48415SM015', [{ id: 1, name: 'Talla', option: 'CH/M' }])] }),
+  ]);
+  const review = await merge.reviewMerge({ log: () => {} });
+  const plan = review.plans.find((p) => p.style === 'BX50015');
+  assert.deepEqual(plan.errors, []);
+  assert.equal(plan.doubt, true, 'nombres distintos: empieza sin marcar');
+  assert.deepEqual(plan.attributes.map((a) => a.name), ['Color'], 'sin atributo Talla');
+  assert.deepEqual(plan.attributes[0].options, ['Blanco', 'Beige']);
+  const pool = fakePool();
+  await merge.applyMerge(review, { selected: new Set(['BX50015']), names: { BX50015: 'Caja Redonda de Bambú' }, pool, runId: 1, log: () => {} });
+  assert.equal(plan.result.ok, true, plan.result.message);
+  const model = bySku(live, 'BX50015');
+  assert.deepEqual(model.variations_data.map((x) => `${x.sku}:${JSON.stringify(x.attributes)}`).sort(),
+    ['BX50015SND001:[{"id":2,"option":"Blanco"}]', 'BX50015SND015:[{"id":2,"option":"Beige"}]']);
+});
